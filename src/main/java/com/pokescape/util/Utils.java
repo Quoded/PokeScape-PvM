@@ -138,7 +138,8 @@ public class Utils {
         Actor playerActor = client.getLocalPlayer();
         String overheadActorName = event.getActor().getName();
         String matchOp = eventParameters.get(0).getAsString();
-        String actorName = (matchOp.startsWith("Actor=")) ? matchOp.substring(matchOp.indexOf("Actor=")) : "";
+        String actorName = (matchOp.startsWith("Actor=")) ? matchOp.substring(matchOp.indexOf("=")+1) : "";
+        if (matchOp.startsWith("Actor=")) matchOp = "matchName";
         switch(matchOp) {
             case "matchFollower":
                 if (overheadActor == followerActor) sendRequest.gameEvent(eventName, messageCollector, null);
