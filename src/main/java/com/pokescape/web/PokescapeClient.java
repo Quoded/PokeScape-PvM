@@ -57,14 +57,22 @@ import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public class PokescapeClient {
-    private @Inject Client client;
-    private @Inject OkHttpClient okHttpClient;
-    private @Inject Gson gson;
-    private @Inject DrawManager drawManager;
-    private @Inject PokescapePlugin plugin;
-    private @Inject formatBody format;
-    private @Inject Utils utils;
-    private @Inject PokescapePanel panel;
+    @Inject
+    private Client client;
+    @Inject
+    private OkHttpClient okHttpClient;
+    @Inject
+    private Gson gson;
+    @Inject
+    private DrawManager drawManager;
+    @Inject
+    private PokescapePlugin plugin;
+    @Inject
+    private formatBody format;
+    @Inject
+    private Utils utils;
+    @Inject
+    private PokescapePanel panel;
 
     private static final String API_ENDPOINT = "https://api.pokescape.com";
     private JsonObject cacheManifest;
