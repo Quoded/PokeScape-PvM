@@ -27,7 +27,6 @@ package com.pokescape.web;
 import com.pokescape.PokescapePlugin;
 import com.pokescape.ui.PokescapePanel;
 import com.pokescape.util.Utils;
-import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.common.base.Strings;
@@ -35,6 +34,7 @@ import net.runelite.api.Client;
 import net.runelite.client.game.ItemStack;
 import net.runelite.client.ui.DrawManager;
 import net.runelite.client.util.ImageUtil;
+import static net.runelite.http.api.RuneLiteAPI.GSON;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.MediaType;
@@ -57,22 +57,13 @@ import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public class PokescapeClient {
-    @Inject
-    private Client client;
-    @Inject
-    private OkHttpClient okHttpClient;
-    @Inject
-    private Gson gson;
-    @Inject
-    private DrawManager drawManager;
-    @Inject
-    private PokescapePlugin plugin;
-    @Inject
-    private formatBody format;
-    @Inject
-    private Utils utils;
-    @Inject
-    private PokescapePanel panel;
+    private @Inject Client client;
+    private @Inject OkHttpClient okHttpClient;
+    private @Inject DrawManager drawManager;
+    private @Inject PokescapePlugin plugin;
+    private @Inject formatBody format;
+    private @Inject Utils utils;
+    private @Inject PokescapePanel panel;
 
     private static final String API_ENDPOINT = "https://api.pokescape.com";
     private JsonObject cacheManifest;
@@ -146,7 +137,7 @@ public class PokescapeClient {
             public void onResponse(Call call, Response response) {
                 try {
                     JsonObject responseBody;
-                    try { responseBody = new Gson().fromJson(response.body() != null ? response.body().string() : null, JsonObject.class); }
+                    try { responseBody = GSON.fromJson(response.body() != null ? response.body().string() : null, JsonObject.class); }
                     catch (Exception e) { responseBody = new JsonObject(); }
 
                     // Update the panel to reflect the server status
@@ -183,7 +174,7 @@ public class PokescapeClient {
         // Build the payload body
         MultipartBody.Builder requestBodyBuilder = new MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
-                .addFormDataPart("payload_json", new Gson().toJson(postBody));
+                .addFormDataPart("payload_json", GSON.toJson(postBody));
 
         // Add formdata to the payload if a screenshot was taken
         if (screenshot != null) {
@@ -214,7 +205,7 @@ public class PokescapeClient {
             public void onResponse(Call call, Response response) {
                 try {
                     JsonObject responseBody;
-                    try { responseBody = new Gson().fromJson(response.body() != null ? response.body().string() : null, JsonObject.class);}
+                    try { responseBody = GSON.fromJson(response.body() != null ? response.body().string() : null, JsonObject.class);}
                     catch (Exception e) { responseBody = new JsonObject(); }
 
                     // Update the server status in the panel to reflect the success/failure of the request
