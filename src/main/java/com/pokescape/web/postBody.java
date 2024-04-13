@@ -36,9 +36,13 @@ import net.runelite.api.WorldType;
 class postBody {
     private String rsn;
     private Long clientHash;
+    private String pluginVersion;
     private Integer currentWorld;
     private EnumSet<WorldType> worldTypes;
+    private JsonObject recentActivities;
     private boolean eventPasswordVisible;
+    private boolean chatboxVisible;
+    private Integer widgetSprite;
     private String triggerActivity;
     private String channels;
     private String validationData;

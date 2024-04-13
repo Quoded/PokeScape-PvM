@@ -156,7 +156,6 @@ public class PokescapePanel extends PluginPanel {
         // Verification indicators: Tempoross
         JLabel tempoLabel = new JLabel("Tempoross");
         tempoLabel.setBorder(new EmptyBorder(0, 0, 0, 0));
-        //tempoLabel.setBounds(0,0,0,0);
         tempoLabel.setFont(FontManager.getRunescapeBoldFont());
         verificationContent.add(tempoLabel, createGbc(18, 0, 0, 0));
         tempoVerificationLabel = new JLabel();

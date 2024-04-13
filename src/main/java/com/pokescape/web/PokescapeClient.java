@@ -24,6 +24,7 @@
  */
 package com.pokescape.web;
 
+import com.pokescape.PokescapeConfig;
 import com.pokescape.PokescapePlugin;
 import com.pokescape.ui.PokescapePanel;
 import com.pokescape.util.Utils;
@@ -61,6 +62,7 @@ public class PokescapeClient {
     private @Inject OkHttpClient okHttpClient;
     private @Inject DrawManager drawManager;
     private @Inject PokescapePlugin plugin;
+    private @Inject PokescapeConfig config;
     private @Inject formatBody format;
     private @Inject Utils utils;
     private @Inject PokescapePanel panel;
@@ -80,6 +82,7 @@ public class PokescapeClient {
         long clienthash = client.getAccountHash();
         postBody.setRsn(rsn);
         postBody.setClientHash(clienthash);
+        postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postRequest(postBody, "/profile");
     }
 
@@ -89,6 +92,7 @@ public class PokescapeClient {
         long clienthash = client.getAccountHash();
         postBody.setRsn(rsn);
         postBody.setClientHash(clienthash);
+        postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postRequest(postBody, "/sync");
     }
 
@@ -98,13 +102,13 @@ public class PokescapeClient {
         postRequest(postBody, "/validation");
     }
 
-    public void gameEvent(String eventName, List<String> messageCollector, JsonObject eventInfo) {
-        postBody postBody = format.event(eventName, messageCollector, eventInfo);
+    public void gameEvent(String eventName, List<String> messageCollector, JsonObject eventInfo, JsonObject recentActivities, Integer spriteID) {
+        postBody postBody = format.event(eventName, messageCollector, eventInfo, recentActivities, spriteID);
         postRequest(postBody, "/event");
     }
 
-    public void loot(String activity, String name, Integer id, Collection<ItemStack> items, List<String> messageCollector) {
-        postBody postBody = format.loot(activity, name, id, items, messageCollector);
+    public void loot(String activity, String name, Integer id, Collection<ItemStack> items, List<String> messageCollector, JsonObject recentActivities) {
+        postBody postBody = format.loot(activity, name, id, items, messageCollector, recentActivities);
         postRequest(postBody, "/loot");
     }
 
@@ -251,6 +255,8 @@ public class PokescapeClient {
                             String dexCount = responseBody.get("dexCount").getAsString();
                             panel.setDexCount(dexCount);
                         }
+                        if (responseBody.has("eventPassword") && !responseBody.get("eventPassword").isJsonNull())
+                            config.setEventPassword(responseBody.get("eventPassword").getAsString());
                         // Request a sync if the manifest is missing or old
                         if (responseBody.has("manifest") && !responseBody.get("manifest").isJsonNull()) {
                             if (cacheManifest == null || !cacheManifest.toString().equals(responseBody.get("manifest").getAsJsonObject().toString())) {
@@ -266,6 +272,10 @@ public class PokescapeClient {
                             format.setPets(responseBody.get("pets").getAsJsonObject());
                         if (responseBody.has("events") && !responseBody.get("events").isJsonNull())
                             plugin.setGameEvents(responseBody.get("events").getAsJsonObject());
+                        if (responseBody.has("activities") && !responseBody.get("activities").isJsonNull())
+                            plugin.setGameActivities(responseBody.get("activities").getAsJsonObject());
+                        if (responseBody.has("allowblock") && !responseBody.get("allowblock").isJsonNull())
+                            plugin.setAllowBlockList(responseBody.get("allowblock").getAsJsonObject());
                     }
 
                     // Update the side panel with minigame verification status

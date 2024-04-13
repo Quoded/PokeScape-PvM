@@ -34,6 +34,9 @@ import net.runelite.api.ChatMessageType;
 import net.runelite.api.Actor;
 import net.runelite.api.Varbits;
 import net.runelite.api.Player;
+import net.runelite.api.Item;
+import net.runelite.api.ItemContainer;
+import net.runelite.api.InventoryID;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.OverheadTextChanged;
 import net.runelite.api.widgets.Widget;
@@ -42,6 +45,7 @@ import net.runelite.client.chat.ChatMessageManager;
 import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.util.Text;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.regex.Matcher;
@@ -72,7 +76,7 @@ public class Utils {
             JsonObject keyObj = object.get(keyName).getAsJsonObject();
             String filterKeyValue = keyObj.get(filterKey).getAsString();
             String eventKey = keyObj.get("event").getAsString();
-            if (event.startsWith(eventKey) && filterKeyValue.equals(filterValue)) {
+            if (event.startsWith(eventKey) || event.matches(eventKey) && filterKeyValue.equals(filterValue)) {
                 JsonArray eventParameters = new JsonArray();
                 if (keyObj.has("param")) eventParameters = keyObj.get("param").getAsJsonArray();
                 matchedEvent.add(new eventObject(keyName, eventParameters));
@@ -81,7 +85,49 @@ public class Utils {
         return matchedEvent;
     }
 
-    public void processEvent(String eventName, JsonArray eventParameters, List<String> messageCollector) {
+    public JsonObject matchActivity(JsonObject recentActivities, JsonObject object, String menuAction, String menuTarget) {
+        object.keySet().forEach(keyName -> {
+            String keyCategory = object.get(keyName).getAsJsonObject().get("category").getAsString();
+            if (!recentActivities.has(keyCategory)) recentActivities.add(keyCategory, null);
+        });
+        object.keySet().forEach(keyName -> {
+            JsonObject keyActivity = object.get(keyName).getAsJsonObject();
+            String keyCategory = object.get(keyName).getAsJsonObject().get("category").getAsString();
+            JsonArray actionFilters = keyActivity.get("menuActions").getAsJsonArray();
+            JsonArray targetFilters = keyActivity.get("menuTargets").getAsJsonArray();
+            boolean actionMatch, targetMatch;
+            for(int i = 0; i < actionFilters.size(); i++) {
+                actionMatch = (menuAction.matches(actionFilters.get(i).getAsString()));
+                targetMatch = (menuTarget.matches(targetFilters.get(i).getAsString()));
+                if (actionMatch && targetMatch) recentActivities.addProperty(keyCategory, keyName);
+            }
+        });
+        return recentActivities;
+    }
+
+    public Boolean processAllowBlock(JsonObject allowBlockList, String lootName, String lootType) {
+        // Return null if the list cannot be found
+        if (allowBlockList == null) return null;
+        final Boolean[] matchAction = { null };
+        allowBlockList.keySet().forEach(keyName -> {
+            // Parse the values of each entry in the allowblock list
+            String name = "", type = "", action = "";
+            JsonObject listEntry = (allowBlockList.has(keyName)) ? allowBlockList.get(keyName).getAsJsonObject() : new JsonObject();
+            if (listEntry.has("name") && !listEntry.get("name").isJsonNull()) name = listEntry.get("name").getAsString();
+            if (listEntry.has("type") && !listEntry.get("type").isJsonNull()) type = listEntry.get("type").getAsString();
+            if (listEntry.has("action") && !listEntry.get("action").isJsonNull()) action = listEntry.get("action").getAsString();
+            // If a matching entry is found, return true or false depending on whether the action is allow or block
+            boolean nameMatch = lootName.matches(name), typeMatch = lootType.matches(type);
+            if (nameMatch && typeMatch) {
+                if (action.equals("allow")) matchAction[0] = true;
+                if (action.equals("block")) matchAction[0] = false;
+            }
+        });
+        // Returns true or false if matches were found. Return null otherwise
+        return matchAction[0];
+    }
+
+    public void processEvent(String eventName, JsonArray eventParameters, List<String> messageCollector, JsonObject recentActivities, Integer spriteID) {
         JsonObject eventInfo = new JsonObject();
         for (JsonElement param : eventParameters) {
             String eventParam = param.getAsString();
@@ -95,10 +141,13 @@ public class Utils {
                 case "playerLocation":
                     eventInfo.add("playerLocation", getPlayerLocation());
                     break;
+                case "playerItems":
+                    eventInfo.add("playerItems", getPlayerItems());
+                    break;
                 default:
             }
         }
-        sendRequest.gameEvent(eventName, messageCollector, eventInfo);
+        sendRequest.gameEvent(eventName, messageCollector, eventInfo, recentActivities, spriteID);
     }
 
     public void matchValidation(PokescapePanel panel, ChatMessage event, String message) {
@@ -142,16 +191,16 @@ public class Utils {
         if (matchOp.startsWith("Actor=")) matchOp = "matchName";
         switch(matchOp) {
             case "matchFollower":
-                if (overheadActor == followerActor) sendRequest.gameEvent(eventName, messageCollector, null);
+                if (overheadActor == followerActor) sendRequest.gameEvent(eventName, messageCollector, null, null, 0);
                 break;
             case "matchSelf":
-                if (overheadActor == playerActor) sendRequest.gameEvent(eventName, messageCollector, null);
+                if (overheadActor == playerActor) sendRequest.gameEvent(eventName, messageCollector, null, null, 0);
                 break;
             case "matchName":
-                if (Objects.equals(overheadActorName, actorName)) sendRequest.gameEvent(eventName, messageCollector, null);
+                if (Objects.equals(overheadActorName, actorName)) sendRequest.gameEvent(eventName, messageCollector, null, null, 0);
                 break;
             default:
-                sendRequest.gameEvent(eventName, messageCollector, null);
+                sendRequest.gameEvent(eventName, messageCollector, null, null, 0);
         }
     }
 
@@ -181,26 +230,29 @@ public class Utils {
     }
 
     private JsonObject getRaidInfo() {
-        int raidersVarc, totalPoints = 0, personalPoints = 0, coxScale = 0, toaLevel;
+        int raidersVarc, totalPoints = 0, personalPoints = 0, coxSize = 0, toaLevel;
         String raidName = "";
         JsonArray raidParty = new JsonArray();
 
-        // Get CoX party members if there's a raid party in the grouping tab
-        Widget raidWidget = client.getWidget(COX_WIDGET);
-        if (raidWidget != null) {
-            Widget[] coxParty = raidWidget.getChildren();
-            if (coxParty != null) {
-                for (Widget widget : coxParty) {
-                    String partyEntry = widget.getText();
-                    if (partyEntry.startsWith("<col=ffffff>")) {
-                        String playerName = Text.removeTags(partyEntry);
-                        raidParty.add(playerName);
+        // Get CoX party members if the raid varbit is set
+        int coxState = client.getVarbitValue(Varbits.IN_RAID);
+        if (coxState > 0) {
+            Widget coxWidget = client.getWidget(COX_WIDGET);
+            if (coxWidget != null) {
+                Widget[] coxParty = coxWidget.getChildren();
+                if (coxParty != null) {
+                    for (Widget widget : coxParty) {
+                        String partyEntry = widget.getText();
+                        if (partyEntry.startsWith("<col=ffffff>")) {
+                            String playerName = Text.removeTags(partyEntry);
+                            raidParty.add(playerName);
+                        }
                     }
                 }
             }
             totalPoints = client.getVarbitValue(Varbits.TOTAL_POINTS);
             personalPoints = client.getVarbitValue(Varbits.PERSONAL_POINTS);
-            coxScale = client.getVarbitValue(Varbits.RAID_PARTY_SIZE);
+            coxSize = client.getVarbitValue(Varbits.RAID_PARTY_SIZE);
             raidName = "cox";
         }
 
@@ -214,8 +266,8 @@ public class Utils {
         }
 
         // Get ToA party members if the invocation level is being displayed
-        raidWidget = client.getWidget(TOA_WIDGET);
-        if (raidWidget != null) {
+        Widget toaWidget = client.getWidget(TOA_WIDGET);
+        if (toaWidget != null) {
             raidersVarc = TOA_RAIDERS_VARC;
             int maxPartySize = 8;
             processRaidVarcs(raidersVarc, maxPartySize, raidParty);
@@ -226,18 +278,19 @@ public class Utils {
         JsonObject raidInfo = new JsonObject();
         int raidSize = raidParty.size();
         raidInfo.add("members", raidParty);
-        raidInfo.addProperty("size", raidSize);
         switch (raidName) {
             case "cox":
-                if (totalPoints != 0) raidInfo.addProperty("totalPts", totalPoints);
-                if (personalPoints != 0) raidInfo.addProperty("personalPts", personalPoints);
-                if (coxScale != 0) raidInfo.addProperty("scale", coxScale);
+                raidInfo.addProperty("totalPts", totalPoints);
+                raidInfo.addProperty("personalPts", personalPoints);
+                raidInfo.addProperty("size", coxSize);
                 break;
             case "tob":
+                raidInfo.addProperty("size", raidSize);
                 break;
             case "toa":
-                try {toaLevel = Integer.parseInt(raidWidget.getText().replace("Level: ", ""));
-                } catch (Exception e) {toaLevel = 0;}
+                raidInfo.addProperty("size", raidSize);
+                try {toaLevel = Integer.parseInt(toaWidget.getText().replace("Level: ", ""));
+                } catch (Exception e) { toaLevel = 0; }
                 raidInfo.addProperty("invo", toaLevel);
                 break;
         }
@@ -278,5 +331,58 @@ public class Utils {
         for (int regionID : regionIDs) regions.add(regionID);
         locationInfo.add("regions", regions);
         return locationInfo;
+    }
+
+    private JsonObject getPlayerItems() {
+        // Fetch the player's inventory and gear containers
+        ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
+        ItemContainer equipment = client.getItemContainer(InventoryID.EQUIPMENT);
+
+        // Map gear to named slots. Set to null if nothing is equipped in the slot
+        HashMap<String, Integer> equipmentSlots = new HashMap<>();
+        if (equipment != null) {
+            equipmentSlots.put("head", equipment.getItem(0) != null ? Objects.requireNonNull(equipment.getItem(0)).getId() : null);
+            equipmentSlots.put("cape", equipment.getItem(1) != null ? Objects.requireNonNull(equipment.getItem(1)).getId() : null);
+            equipmentSlots.put("neck", equipment.getItem(2) != null ? Objects.requireNonNull(equipment.getItem(2)).getId() : null);
+            equipmentSlots.put("weapon", equipment.getItem(3) != null ? Objects.requireNonNull(equipment.getItem(3)).getId() : null);
+            equipmentSlots.put("body", equipment.getItem(4) != null ? Objects.requireNonNull(equipment.getItem(4)).getId() : null);
+            equipmentSlots.put("shield", equipment.getItem(5) != null ? Objects.requireNonNull(equipment.getItem(5)).getId() : null);
+            equipmentSlots.put("legs", equipment.getItem(7) != null ? Objects.requireNonNull(equipment.getItem(7)).getId() : null);
+            equipmentSlots.put("hands", equipment.getItem(9) != null ? Objects.requireNonNull(equipment.getItem(9)).getId() : null);
+            equipmentSlots.put("feet", equipment.getItem(10) != null ? Objects.requireNonNull(equipment.getItem(10)).getId() : null);
+            equipmentSlots.put("jaw", equipment.getItem(11) != null ? Objects.requireNonNull(equipment.getItem(11)).getId() : null);
+            equipmentSlots.put("ring", equipment.getItem(12) != null ? Objects.requireNonNull(equipment.getItem(12)).getId() : null);
+            equipmentSlots.put("ammo", equipment.getItem(13) != null ? Objects.requireNonNull(equipment.getItem(13)).getId() : null);
+        }
+
+        // Map all items to their respective containers
+        Item[] itemsInventory = inventory != null ? inventory.getItems() : new Item[0];
+        Item[] itemsEquipped = equipment != null ? equipment.getItems() : new Item[0];
+        HashMap<String, Item[]> allItems = new HashMap<>();
+        allItems.put("inventory", itemsInventory);
+        allItems.put("equipment", itemsEquipped);
+
+        // Convert mapped containers and return json object containing gear+inventory info
+        JsonObject inventoryInfo = new JsonObject();
+        for (String containerName : allItems.keySet()) {
+            JsonObject containerItems = new JsonObject();
+            JsonArray itemIDs = new JsonArray();
+            JsonArray itemQuantities = new JsonArray();
+            for (Item item : allItems.get(containerName)) {
+                if (item.getId() != -1) itemIDs.add(item.getId());
+                if (item.getId() > 0) itemQuantities.add(item.getQuantity());
+            }
+            containerItems.add("itemID", itemIDs);
+            containerItems.add("itemQuantity", itemQuantities);
+            if (containerName.equals("equipment"))  {
+                JsonObject gearSlots = new JsonObject();
+                for (String slot : equipmentSlots.keySet()) {
+                    gearSlots.addProperty(slot, equipmentSlots.get(slot));
+                }
+                containerItems.add("slot", gearSlots);
+            }
+            inventoryInfo.add(containerName, containerItems);
+        }
+        return inventoryInfo;
     }
 }

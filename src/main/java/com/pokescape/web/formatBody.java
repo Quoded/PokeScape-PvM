@@ -31,6 +31,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.WorldType;
+import net.runelite.api.widgets.Widget;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.ItemStack;
 
@@ -53,6 +54,9 @@ public class formatBody {
             "You have a funny feeling like you would have been followed..."
     );
 
+    private static final int ALL_FILTER = 10616837;
+    private static final int GAME_FILTER = 10616840;
+
     public void setPets(JsonObject pets) {
         allPets = pets;
     }
@@ -66,7 +70,9 @@ public class formatBody {
 
         postBody.setRsn(rsn);
         postBody.setClientHash(clienthash);
+        postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postBody.setEventPasswordVisible(eventPasswordVisible());
+        postBody.setChatboxVisible(chatboxVisible());
         postBody.setCurrentWorld(world);
         postBody.setWorldTypes(worldType);
         postBody.setTriggerActivity("validation");
@@ -74,7 +80,7 @@ public class formatBody {
         return postBody;
     }
 
-    public postBody event(String eventName, List<String> messageCollector, JsonObject eventInfo) {
+    public postBody event(String eventName, List<String> messageCollector, JsonObject eventInfo, JsonObject recentActivities, Integer spriteID) {
         postBody postBody = new postBody();
         String rsn = client.getLocalPlayer().getName();
         long clienthash = client.getAccountHash();
@@ -89,16 +95,20 @@ public class formatBody {
 
         postBody.setRsn(rsn);
         postBody.setClientHash(clienthash);
+        postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postBody.setEventPasswordVisible(eventPasswordVisible());
+        postBody.setChatboxVisible(chatboxVisible());
+        postBody.setWidgetSprite(spriteID);
         postBody.setCurrentWorld(world);
         postBody.setWorldTypes(worldType);
+        postBody.setRecentActivities(recentActivities);
         postBody.setTriggerActivity("gameEvent");
         postBody.setGameEvent(eventName);
         postBody.setGameMsg(gameMessages);
         return postBody;
     }
 
-    public postBody loot(String activity, String npcName, Integer npcID, Collection<ItemStack> items, List<String> messageCollector) {
+    public postBody loot(String activity, String npcName, Integer npcID, Collection<ItemStack> items, List<String> messageCollector, JsonObject recentActivities) {
         postBody postBody = new postBody();
         String rsn = client.getLocalPlayer().getName();
         long clienthash = client.getAccountHash();
@@ -135,11 +145,19 @@ public class formatBody {
             }
         }
 
+        // Clear skilling pets from recent activities to prevent false-positives from loot
+        if (recentActivities.has("skillingPetActions") && !recentActivities.get("skillingPetActions").isJsonNull()) {
+            recentActivities.add("skillingPetActions", null);
+        }
+
         postBody.setRsn(rsn);
         postBody.setClientHash(clienthash);
+        postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postBody.setEventPasswordVisible(eventPasswordVisible());
+        postBody.setChatboxVisible(chatboxVisible());
         postBody.setCurrentWorld(world);
         postBody.setWorldTypes(worldType);
+        postBody.setRecentActivities(recentActivities);
         postBody.setTriggerActivity(activity);
         postBody.setNpcName(npcName);
         postBody.setNpcID(npcID);
@@ -155,6 +173,15 @@ public class formatBody {
         String boolB = (!config.eventPassword().isEmpty()) ? "1" : "0";
         int binaryOut = Integer.parseInt(boolA+boolB,2);
         return binaryOut == 3;
+    }
+
+    private boolean chatboxVisible() {
+        Widget allFilter = client.getWidget(ALL_FILTER);
+        Widget gameFilter = client.getWidget(GAME_FILTER);
+        int toggledState = 3053;
+        boolean allVisibility = (allFilter != null ? allFilter.getSpriteId() : 0) == toggledState;
+        boolean gameVisibility = (gameFilter != null ? gameFilter.getSpriteId() : 0) == toggledState;
+        return allVisibility || gameVisibility;
     }
 
     private static Collection<ItemStack> stack(Collection<ItemStack> items) {

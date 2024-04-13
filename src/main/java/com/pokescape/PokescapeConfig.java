@@ -32,7 +32,7 @@ import net.runelite.client.config.ConfigSection;
 
 @ConfigGroup("pokescape")
 public interface PokescapeConfig extends Config {
-	String PLUGIN_VERSION = "0.0.1";
+	String PLUGIN_VERSION = "0.0.2";
 
 	enum SnapMode {
 		INV("Top of Inventory"), CHATBOX("Top of Chatbox"), OFF("Off (Alt-Drag)");
@@ -84,6 +84,16 @@ public interface PokescapeConfig extends Config {
 			section = overlaySection
 	)
 	default String eventPassword() { return ""; }
+
+	@ConfigItem(
+			position = 5,
+			keyName = "overlay_password",
+			name = "Event Password:",
+			description = "Adds the event password to the overlay.",
+			section = overlaySection,
+			hidden = true
+	)
+	void setEventPassword(String password);
 
 	@ConfigItem(
 			position = 6,
