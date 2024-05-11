@@ -101,11 +101,7 @@ public class PokescapeClient {
 
     // Initialize a call instance that doesn't timeout for SSE
     public void initSSE() {
-        sseClient = new OkHttpClient().newBuilder()
-                .connectTimeout(0, TimeUnit.MINUTES)
-                .readTimeout(0, TimeUnit.MINUTES)
-                .writeTimeout(0, TimeUnit.MINUTES)
-                .build();
+        sseClient = sseClient.newBuilder().connectTimeout(0, TimeUnit.MINUTES).readTimeout(0, TimeUnit.MINUTES).writeTimeout(0, TimeUnit.MINUTES).build();
         connectToSSE(API_ENDPOINT+"/sse", sseClient);
     }
 
