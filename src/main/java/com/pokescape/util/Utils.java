@@ -28,6 +28,7 @@ import com.pokescape.web.PokescapeClient;
 import com.pokescape.ui.PokescapePanel;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonObject;
 import net.runelite.api.Client;
 import net.runelite.api.ChatMessageType;
@@ -44,6 +45,8 @@ import net.runelite.client.chat.ChatMessageBuilder;
 import net.runelite.client.chat.ChatMessageManager;
 import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.util.Text;
+import java.util.stream.Stream;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -61,8 +64,8 @@ public class Utils {
     private @Inject ChatMessageManager chatMessageManager;
     private @Inject PokescapePanel panel;
 
-    private static final Pattern CHECKRIFT_REGEX = Pattern.compile("You have (\\d+) catalytic energy and (\\d+) elemental energy. You can use them to search the rift (\\d+) times. You have searched the rift (\\d+) times.");
-    private static final Pattern CHECKTEMPO_REGEX = Pattern.compile("There is a reward for you to find in the reward pool.|There are (\\d+) rewards for you to find in the reward pool.");
+    private static final Pattern CHECKRIFT_REGEX = Pattern.compile("You have ([0-9.,]+) catalytic energy and ([0-9.,]+) elemental energy. You can use them to search the rift ([0-9.,]+) times. You have searched the rift ([0-9.,]+) times.");
+    private static final Pattern CHECKTEMPO_REGEX = Pattern.compile("There is a reward for you to find in the reward pool.|There are ([0-9.,]+) rewards for you to find in the reward pool.");
     private static final Pattern EMPTYTEMPO_REGEX = Pattern.compile("There doesn't seem to be anything here for you. Maybe you could work with the Spirit Anglers...");
 
     private static final int COX_WIDGET = 32768010;
@@ -70,22 +73,22 @@ public class Utils {
     private static final int TOB_RAIDERS_VARC = 330;
     private static final int TOA_RAIDERS_VARC = 1099;
 
-    public List<eventObject> matchEvent(JsonObject object, String event, String filterKey, String filterValue) {
+    public List<eventObject> matchEvent(JsonObject object, String event, String eventType, String filterKey, String filterValue) {
         List<eventObject> matchedEvent = new ArrayList<>();
         object.keySet().forEach(keyName -> {
             JsonObject keyObj = object.get(keyName).getAsJsonObject();
             String filterKeyValue = keyObj.get(filterKey).getAsString();
             String eventKey = keyObj.get("event").getAsString();
-            if (event.startsWith(eventKey) || event.matches(eventKey) && filterKeyValue.equals(filterValue)) {
+            if ((event.startsWith(eventKey) || event.matches(eventKey)) && filterKeyValue.equals(filterValue)) {
                 JsonArray eventParameters = new JsonArray();
                 if (keyObj.has("param")) eventParameters = keyObj.get("param").getAsJsonArray();
-                matchedEvent.add(new eventObject(keyName, eventParameters));
+                matchedEvent.add(new eventObject(keyName, eventType, eventParameters));
             }
         });
         return matchedEvent;
     }
 
-    public JsonObject matchActivity(JsonObject recentActivities, JsonObject object, String menuAction, String menuTarget) {
+    public JsonObject matchActivity(JsonObject recentActivities, JsonObject object, String menuAction, String menuTarget, int animAction) {
         object.keySet().forEach(keyName -> {
             String keyCategory = object.get(keyName).getAsJsonObject().get("category").getAsString();
             if (!recentActivities.has(keyCategory)) recentActivities.add(keyCategory, null);
@@ -93,13 +96,32 @@ public class Utils {
         object.keySet().forEach(keyName -> {
             JsonObject keyActivity = object.get(keyName).getAsJsonObject();
             String keyCategory = object.get(keyName).getAsJsonObject().get("category").getAsString();
-            JsonArray actionFilters = keyActivity.get("menuActions").getAsJsonArray();
-            JsonArray targetFilters = keyActivity.get("menuTargets").getAsJsonArray();
+            JsonArray clearCategories = (keyActivity.has("clearCategories") && !keyActivity.get("clearCategories").isJsonNull()) ? keyActivity.get("clearCategories").getAsJsonArray() : null;
+            JsonArray actionFilters = (keyActivity.has("menuActions") && !keyActivity.get("menuActions").isJsonNull()) ? keyActivity.get("menuActions").getAsJsonArray() : null;
+            JsonArray targetFilters = (keyActivity.has("menuTargets") && !keyActivity.get("menuTargets").isJsonNull()) ? keyActivity.get("menuTargets").getAsJsonArray() : null;
             boolean actionMatch, targetMatch;
-            for(int i = 0; i < actionFilters.size(); i++) {
-                actionMatch = (menuAction.matches(actionFilters.get(i).getAsString()));
-                targetMatch = (menuTarget.matches(targetFilters.get(i).getAsString()));
-                if (actionMatch && targetMatch) recentActivities.addProperty(keyCategory, keyName);
+            if (actionFilters != null && targetFilters != null) {
+                for (int i = 0; i < actionFilters.size(); i++) {
+                    actionMatch = (menuAction.matches(actionFilters.get(i).getAsString()));
+                    targetMatch = (menuTarget.matches(targetFilters.get(i).getAsString()));
+                    if (actionMatch && targetMatch) {
+                        if (clearCategories != null) for (JsonElement category : clearCategories) recentActivities.add(category.toString().replaceAll("\"", ""), null);
+                        recentActivities.addProperty(keyCategory, keyName);
+                    }
+                }
+            }
+            if (animAction > -1) {
+                JsonArray animFilters = (keyActivity.has("animActions") && !keyActivity.get("animActions").isJsonNull()) ? keyActivity.get("animActions").getAsJsonArray() : null;
+                if (animFilters != null) {
+                    for (int i = 0; i < animFilters.size(); i++) {
+                        boolean animMatch = (animAction == animFilters.get(i).getAsInt());
+                        if (animMatch) {
+                            if (clearCategories != null) for (JsonElement category : clearCategories)
+                                recentActivities.add(category.toString().replaceAll("\"", ""), null);
+                            recentActivities.addProperty(keyCategory, keyName);
+                        }
+                    }
+                }
             }
         });
         return recentActivities;
@@ -127,11 +149,14 @@ public class Utils {
         return matchAction[0];
     }
 
-    public void processEvent(String eventName, JsonArray eventParameters, List<String> messageCollector, JsonObject recentActivities, Integer spriteID) {
+    public void processEvent(String eventName, String eventType, JsonArray eventParameters, int eventWidget, List<String> messageCollector, JsonObject recentActivities, Integer spriteID) {
         JsonObject eventInfo = new JsonObject();
         for (JsonElement param : eventParameters) {
             String eventParam = param.getAsString();
             switch(eventParam) {
+                case "widgetInfo":
+                    eventInfo.add("widgetInfo", getWidgetInfo(eventWidget, eventParameters));
+                    break;
                 case "raidInfo":
                     eventInfo.add("raidInfo", getRaidInfo());
                     break;
@@ -147,7 +172,7 @@ public class Utils {
                 default:
             }
         }
-        sendRequest.gameEvent(eventName, messageCollector, eventInfo, recentActivities, spriteID);
+        sendRequest.gameEvent(eventName, eventType, messageCollector, eventInfo, recentActivities, spriteID);
     }
 
     public void matchValidation(PokescapePanel panel, ChatMessage event, String message) {
@@ -155,7 +180,7 @@ public class Utils {
         Matcher matcher = CHECKTEMPO_REGEX.matcher(message);
         if (matcher.find()) {
             int rewardPermits = 0;
-            try { rewardPermits = Integer.parseInt(matcher.group(1)); }
+            try { rewardPermits = Integer.parseInt(matcher.group(1).replaceAll("[.,]","")); }
             catch (Exception e) { rewardPermits = 1; }
             if (!panel.getTemporossVerification())
                 sendRequest.validateMinigame(panel, "{\"activity\":\"tempoross\",\"rewardPermits\":"+rewardPermits+"}");
@@ -165,8 +190,8 @@ public class Utils {
             // Check stored catalytic and elemental energy at the reward guardian.
             matcher = CHECKRIFT_REGEX.matcher(message);
             if (matcher.find()) {
-                int catalyticEnergy = Integer.parseInt(matcher.group(1));
-                int elementalEnergy = Integer.parseInt(matcher.group(2));
+                int catalyticEnergy = Integer.parseInt(matcher.group(1).replaceAll("[.,]",""));
+                int elementalEnergy = Integer.parseInt(matcher.group(2).replaceAll("[.,]",""));
                 if (!panel.getGotrVerification())
                     sendRequest.validateMinigame(panel, "{\"activity\":\"gotr\",\"catalyticEnergy\":"+catalyticEnergy+",\"elementalEnergy\":"+elementalEnergy+"}");
             }
@@ -180,7 +205,7 @@ public class Utils {
         }
     }
 
-    public void matchOverhead(OverheadTextChanged event, String eventName, JsonArray eventParameters) {
+    public void matchOverhead(OverheadTextChanged event, String eventName, String eventType, JsonArray eventParameters, JsonObject recentActivities) {
         List<String> messageCollector = new ArrayList<>();
         Actor overheadActor = event.getActor();
         Actor followerActor = client.getFollower();
@@ -191,17 +216,108 @@ public class Utils {
         if (matchOp.startsWith("Actor=")) matchOp = "matchName";
         switch(matchOp) {
             case "matchFollower":
-                if (overheadActor == followerActor) sendRequest.gameEvent(eventName, messageCollector, null, null, 0);
+                if (overheadActor == followerActor) sendRequest.gameEvent(eventName, eventType, messageCollector, null, recentActivities, -1);
                 break;
             case "matchSelf":
-                if (overheadActor == playerActor) sendRequest.gameEvent(eventName, messageCollector, null, null, 0);
+                if (overheadActor == playerActor) sendRequest.gameEvent(eventName, eventType, messageCollector, null, recentActivities, -1);
                 break;
             case "matchName":
-                if (Objects.equals(overheadActorName, actorName)) sendRequest.gameEvent(eventName, messageCollector, null, null, 0);
+                if (Objects.equals(overheadActorName, actorName)) sendRequest.gameEvent(eventName, eventType, messageCollector, null, recentActivities, -1);
                 break;
             default:
-                sendRequest.gameEvent(eventName, messageCollector, null, null, 0);
+                sendRequest.gameEvent(eventName, eventType, messageCollector, null, recentActivities, -1);
         }
+    }
+
+    private JsonObject getWidgetInfo(int targetWidgetID, JsonArray eventParameters) {
+        JsonObject widgetInfo = new JsonObject();
+        // Go up one level and get the parent of the initial target
+        int rootWidgetID = -1;
+        for (int i = 0; i < 12; i++) {
+            try { rootWidgetID = client.getWidget(targetWidgetID, i).getParentId(); }
+            catch (Exception e) { }
+            if (rootWidgetID != -1) break;
+        }
+        // Processes all the childen of the root widget to generate a json object of all available text and sprites
+        if (rootWidgetID != -1) processWidgetNodes(rootWidgetID, widgetInfo, 0, new int[]{0,0});
+
+        // If filters are included with the event, apply them to the generated json object
+        // This reduces the size of the request payload and restructures the widget data to have meaningful key-value pairs
+        List<String> filterKeys = new ArrayList<>();
+        List<String> renameKeys = new ArrayList<>();
+        for (JsonElement param : eventParameters) {
+            String eventParam = param.getAsString();
+            if (eventParam.startsWith("filterKeys=")) filterKeys = Arrays.asList(eventParam.substring(eventParam.indexOf("=")+1).split(","));
+            if (eventParam.startsWith("renameKeys=")) renameKeys = Arrays.asList(eventParam.substring(eventParam.indexOf("=")+1).split(","));
+        }
+        if (rootWidgetID != -1 && (filterKeys.size() > 0 || renameKeys.size() > 0)) widgetInfo = filterWidgetInfo(widgetInfo, filterKeys, renameKeys);
+
+        return widgetInfo;
+    }
+
+    private void processWidgetNodes(int widgetID, JsonObject widgetStructure, int searchIteration, int[] childIteration) {
+        // Grab all possible children of the target widget and concatenate them into a single array
+        Widget[] sChildren = Objects.requireNonNull(client.getWidget(widgetID)).getStaticChildren();
+        Widget[] nChildren = Objects.requireNonNull(client.getWidget(widgetID)).getNestedChildren();
+        Widget[] dChildren = Objects.requireNonNull(client.getWidget(widgetID)).getDynamicChildren();
+        Widget[] allChildren = Stream.concat(Stream.concat(Arrays.stream(sChildren), Arrays.stream(nChildren)), Arrays.stream(dChildren)).toArray(Widget[]::new);
+        // For every child widget, search for text/sprite values, generate a unique key and add it the key-value to the json object
+        for (int i = 0; i < allChildren.length; i++) {
+            if (!allChildren[i].getText().equals("")) {
+                String key = "Text_"+searchIteration+i;
+                key = genUniqueStaticKey(widgetStructure, childIteration[0], key);
+                widgetStructure.addProperty(key, Text.removeTags(allChildren[i].getText()));
+            }
+            if (allChildren[i].getSpriteId() > -1) {
+                String key = "SpriteID_"+searchIteration+i;
+                key = genUniqueStaticKey(widgetStructure, childIteration[1], key);
+                widgetStructure.addProperty(key, allChildren[i].getSpriteId());
+            }
+            // Repeat the process for each node that has its own children
+            // Most widgets won't have more than 50 total nodes, but for safety we cap this at 200 iterations
+            if (allChildren[i].getId() != allChildren[i].getParentId() && allChildren[i].getParentId() != -1 && searchIteration < 200) {
+                searchIteration += 1;
+                processWidgetNodes(allChildren[i].getId(), widgetStructure, searchIteration, new int[]{0,0});
+            }
+        }
+    }
+
+    private String genUniqueStaticKey(JsonObject widgetStructure, int childIteration, String key) {
+        if (widgetStructure.has(key)) {
+            childIteration += 1;
+            key = key+childIteration;
+        }
+        if (widgetStructure.has(key)) return genUniqueStaticKey(widgetStructure, childIteration, key);
+        else return key;
+    }
+
+    private JsonObject filterWidgetInfo(JsonObject widgetStructure, List<String> filterKeys, List<String> renameKeys) {
+        JsonObject filteredStructure = new JsonObject();
+        // Only add keys that are included in the filterkeys list
+        for (String key : filterKeys) if (widgetStructure.has(key)) filteredStructure.add(key, widgetStructure.get(key));
+        // Rename generated keys to the provided rename keys
+        for (String key : renameKeys) {
+            List<String> rename = Arrays.asList(key.split("::"));
+            String oldName = rename.get(0);
+            String newName = rename.get(1);
+            // Return the key value as a boolean if there are mapped values provided
+            List<String> boolValues = new ArrayList<>();
+            if (newName.contains("!!")) {
+                List<String> boolOp = Arrays.asList(newName.split("!!"));
+                newName = boolOp.get(0);
+                boolValues = Arrays.asList(boolOp.get(1).split(":"));
+            }
+            JsonElement returnValue = widgetStructure.get(oldName);
+            if (boolValues.size() == 2) {
+                if (returnValue.toString().equals(boolValues.get(0))) returnValue = new JsonPrimitive(true);
+                if (returnValue.toString().equals(boolValues.get(1))) returnValue = new JsonPrimitive(false);
+            }
+            if (filteredStructure.has(oldName)) {
+                filteredStructure.remove(oldName);
+                filteredStructure.add(newName, returnValue);
+            }
+        }
+        return filteredStructure;
     }
 
     public void sendLocalChatMsg(JsonArray messageStructure) {
@@ -318,7 +434,7 @@ public class Utils {
         return renderedPlayers;
     }
 
-    private JsonObject getPlayerLocation() {
+    public JsonObject getPlayerLocation() {
         // Returns coordinates and regions of the player
         JsonObject locationInfo = new JsonObject();
         locationInfo.addProperty("worldX", client.getLocalPlayer().getWorldLocation().getX());
@@ -333,7 +449,7 @@ public class Utils {
         return locationInfo;
     }
 
-    private JsonObject getPlayerItems() {
+    public JsonObject getPlayerItems() {
         // Fetch the player's inventory and gear containers
         ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
         ItemContainer equipment = client.getItemContainer(InventoryID.EQUIPMENT);

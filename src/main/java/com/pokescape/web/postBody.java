@@ -35,7 +35,7 @@ import net.runelite.api.WorldType;
 @Data
 class postBody {
     private String rsn;
-    private Long clientHash;
+    private String clientHash;
     private String pluginVersion;
     private Integer currentWorld;
     private EnumSet<WorldType> worldTypes;

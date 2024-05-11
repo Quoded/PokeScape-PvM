@@ -24,6 +24,8 @@
  */
 package com.pokescape.web;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.pokescape.PokescapeConfig;
 import com.google.common.collect.ImmutableSet;
 import com.google.gson.JsonObject;
@@ -64,12 +66,12 @@ public class formatBody {
     public postBody minigame(String validationData) {
         postBody postBody = new postBody();
         String rsn = client.getLocalPlayer().getName();
-        long clienthash = client.getAccountHash();
+        String clientHash = Long.toString(client.getAccountHash());
         int world = client.getWorld();
         EnumSet<WorldType> worldType = client.getWorldType();
 
         postBody.setRsn(rsn);
-        postBody.setClientHash(clienthash);
+        postBody.setClientHash(clientHash);
         postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postBody.setEventPasswordVisible(eventPasswordVisible());
         postBody.setChatboxVisible(chatboxVisible());
@@ -80,10 +82,10 @@ public class formatBody {
         return postBody;
     }
 
-    public postBody event(String eventName, List<String> messageCollector, JsonObject eventInfo, JsonObject recentActivities, Integer spriteID) {
+    public postBody event(String eventName, String eventType, List<String> messageCollector, JsonObject eventInfo, JsonObject recentActivities, Integer spriteID) {
         postBody postBody = new postBody();
         String rsn = client.getLocalPlayer().getName();
-        long clienthash = client.getAccountHash();
+        String clientHash = Long.toString(client.getAccountHash());
         int world = client.getWorld();
         EnumSet<WorldType> worldType = client.getWorldType();
 
@@ -94,15 +96,15 @@ public class formatBody {
         if (eventInfo != null && !eventInfo.entrySet().isEmpty()) postBody.setEventInfo(eventInfo);
 
         postBody.setRsn(rsn);
-        postBody.setClientHash(clienthash);
+        postBody.setClientHash(clientHash);
         postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postBody.setEventPasswordVisible(eventPasswordVisible());
         postBody.setChatboxVisible(chatboxVisible());
         postBody.setWidgetSprite(spriteID);
         postBody.setCurrentWorld(world);
         postBody.setWorldTypes(worldType);
-        postBody.setRecentActivities(recentActivities);
-        postBody.setTriggerActivity("gameEvent");
+        postBody.setRecentActivities(filteredActivities(recentActivities));
+        postBody.setTriggerActivity(eventType);
         postBody.setGameEvent(eventName);
         postBody.setGameMsg(gameMessages);
         return postBody;
@@ -111,7 +113,7 @@ public class formatBody {
     public postBody loot(String activity, String npcName, Integer npcID, Collection<ItemStack> items, List<String> messageCollector, JsonObject recentActivities) {
         postBody postBody = new postBody();
         String rsn = client.getLocalPlayer().getName();
-        long clienthash = client.getAccountHash();
+        String clientHash = Long.toString(client.getAccountHash());
         int world = client.getWorld();
         EnumSet<WorldType> worldType = client.getWorldType();
 
@@ -145,19 +147,23 @@ public class formatBody {
             }
         }
 
-        // Clear skilling pets from recent activities to prevent false-positives from loot
-        if (recentActivities.has("skillingPetActions") && !recentActivities.get("skillingPetActions").isJsonNull()) {
-            recentActivities.add("skillingPetActions", null);
+        // Clears activity to prevent false-positives on other loot (pets)
+        if (recentActivities.has("nullOnLoot") && !recentActivities.get("nullOnLoot").isJsonNull()) {
+            JsonArray activities = recentActivities.get("nullOnLoot").getAsJsonArray();
+            for (JsonElement activityElem : activities) {
+                String activityName = activityElem.getAsString();
+                recentActivities.add(activityName, null);
+            }
         }
 
         postBody.setRsn(rsn);
-        postBody.setClientHash(clienthash);
+        postBody.setClientHash(clientHash);
         postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postBody.setEventPasswordVisible(eventPasswordVisible());
         postBody.setChatboxVisible(chatboxVisible());
         postBody.setCurrentWorld(world);
         postBody.setWorldTypes(worldType);
-        postBody.setRecentActivities(recentActivities);
+        postBody.setRecentActivities(filteredActivities(recentActivities));
         postBody.setTriggerActivity(activity);
         postBody.setNpcName(npcName);
         postBody.setNpcID(npcID);
@@ -166,6 +172,20 @@ public class formatBody {
         postBody.setLootQuantity(lootQuantity);
         postBody.setGameMsg(gameMessages);
         return postBody;
+    }
+
+    private JsonObject filteredActivities(JsonObject recentActivities) {
+        JsonObject filteredActivities = new JsonObject();
+        if (recentActivities.has("filterActivities") && recentActivities.get("filterActivities").isJsonArray()) {
+            JsonArray activities = recentActivities.get("filterActivities").getAsJsonArray();
+            for (JsonElement activity : activities) {
+                String activityName = activity.getAsString();
+                if (recentActivities.has(activityName) && !recentActivities.get(activityName).isJsonNull()) {
+                    filteredActivities.add(activityName, recentActivities.get(activityName));
+                }
+            }
+        }
+        return filteredActivities;
     }
 
     private boolean eventPasswordVisible() {

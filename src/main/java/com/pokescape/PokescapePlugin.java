@@ -30,6 +30,7 @@ import com.pokescape.ui.PokescapePanel;
 import com.pokescape.web.PokescapeClient;
 import com.pokescape.util.Utils;
 import com.pokescape.util.eventObject;
+import com.pokescape.util.PokeScapeGoals;
 import com.pokescape.ui.Icon;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -45,6 +46,7 @@ import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.OverheadTextChanged;
 import net.runelite.api.events.ResizeableChanged;
 import net.runelite.api.events.MenuOptionClicked;
+import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.Varbits;
@@ -88,6 +90,7 @@ public class PokescapePlugin extends Plugin {
 
 	private PokescapePanel panel;
 	private PokescapeOverlay overlay;
+	private PokeScapeGoals goals;
 	private NavigationButton navButton;
 	private static GameState currentGameState;
 
@@ -97,7 +100,9 @@ public class PokescapePlugin extends Plugin {
 	private JsonObject gameActivities;
 	private JsonObject allowBlockList;
 	private String eventName;
+	private String eventType;
 	private JsonArray eventParameters;
+	private int eventWidget;
 	private JsonObject recentActivities = new JsonObject();
 	private final List<String> messageCollector = new ArrayList<>();
 	private boolean fetchProfile;
@@ -108,6 +113,8 @@ public class PokescapePlugin extends Plugin {
 
 	@Override
 	protected void startUp() {
+		goals = injector.getInstance(PokeScapeGoals.class);
+		goals.startUp();
 		initPanel();
 		overlayManager.add(overlay);
 		if (config.showPokescapeSidePanel()) clientToolbar.addNavigation(navButton);
@@ -115,10 +122,30 @@ public class PokescapePlugin extends Plugin {
 
 	@Override
 	protected void shutDown() {
+		sendRequest.shutdownSSE();
+		goals.shutDown();
 		overlayManager.remove(overlay);
 		clientToolbar.removeNavigation(navButton);
+		goals = null;
 		panel = null;
 		overlay = null;
+	}
+
+	public void setGameEvents(JsonObject events) {
+		gameEvents = events;
+	}
+	public void setAllowBlockList(JsonObject allowblock) {
+		allowBlockList = allowblock;
+	}
+	public void setGameActivities(JsonObject activities) { gameActivities = activities; goals.setPlayerState(); }
+	public JsonObject getGameActivities() {
+		return gameActivities;
+	}
+	public JsonObject getPlayerState() {
+		return recentActivities;
+	}
+	public List<String> getMessageCollector() {
+		return messageCollector;
 	}
 
 	private void initPanel() {
@@ -156,13 +183,13 @@ public class PokescapePlugin extends Plugin {
 	public void onGameTick(GameTick tick) {
 		// Send a profile request on login/hop
 		if (fetchProfile) {
-			sendRequest.profile(panel);
+			sendRequest.profile(panel, goals);
 			fetchProfile = !fetchProfile;
 		}
 		// Process events when a matching event is found
 		if (fetchGameEvent) {
 			int spriteID = fetchWidgetSprite();
-			utils.processEvent(eventName, eventParameters, messageCollector, recentActivities, spriteID);
+			utils.processEvent(eventName, eventType, eventParameters, eventWidget, messageCollector, recentActivities, spriteID);
 			fetchGameEvent = !fetchGameEvent;
 		}
 
@@ -184,20 +211,10 @@ public class PokescapePlugin extends Plugin {
 		}
 	}
 
-	public void setGameEvents(JsonObject events) {
-		gameEvents = events;
-	}
-	public void setGameActivities(JsonObject activities) {
-		gameActivities = activities;
-	}
-	public void setAllowBlockList(JsonObject allowblock) {
-		allowBlockList = allowblock;
-	}
-
 	private int fetchWidgetSprite() {
 		Widget sprite = client.getWidget(ComponentID.DIALOG_SPRITE_SPRITE);
 		if (sprite != null) return sprite.getItemId();
-		return 0;
+		return -1;
 	}
 
 	@Subscribe
@@ -214,8 +231,7 @@ public class PokescapePlugin extends Plugin {
 
 	@Subscribe
 	public void onVarbitChanged(VarbitChanged event) {
-		if (event.getVarbitId() == Varbits.SIDE_PANELS)
-			overlay.recalcOverlay(false);
+		if (event.getVarbitId() == Varbits.SIDE_PANELS) overlay.recalcOverlay(false);
 	}
 
 	@Subscribe
@@ -228,7 +244,7 @@ public class PokescapePlugin extends Plugin {
 		// Matches menu actions to a key-value list to determine the player's most recently performed activities
 		String lastMenuOption = Text.removeTags(event.getMenuOption());
 		String lastMenuTarget = Text.removeTags(event.getMenuTarget());
-		if (gameActivities != null) recentActivities = utils.matchActivity(recentActivities, gameActivities, lastMenuOption, lastMenuTarget);
+		if (gameActivities != null) recentActivities = utils.matchActivity(recentActivities, gameActivities, lastMenuOption, lastMenuTarget, -1);
 	}
 
 	@Subscribe
@@ -247,10 +263,11 @@ public class PokescapePlugin extends Plugin {
 
 		// Find game event messages
 		if (gameEvents != null && !fetchGameEvent) {
-			List<eventObject> eventMatch = utils.matchEvent(gameEvents, chatMessage, "type", "gameMessage");
+			List<eventObject> eventMatch = utils.matchEvent(gameEvents, chatMessage, "gameEvent", "type", "gameMessage");
 			if (!eventMatch.isEmpty()) {
 				for (eventObject item : eventMatch) {
 					eventName = item.getEventName();
+					eventType = item.getEventType();
 					eventParameters = item.getEventParameters();
 				}
 				fetchGameEvent = true;
@@ -284,13 +301,31 @@ public class PokescapePlugin extends Plugin {
 	public void onOverheadTextChanged(OverheadTextChanged event) {
 		// Find overhead event messages
 		if (gameEvents != null && !fetchGameEvent) {
-			List<eventObject> eventMatch = utils.matchEvent(gameEvents, event.getOverheadText(), "type", "overHeadText");
+			List<eventObject> eventMatch = utils.matchEvent(gameEvents, event.getOverheadText(), "gameEvent", "type", "overHeadText");
 			if (!eventMatch.isEmpty()) {
 				for (eventObject item : eventMatch) {
 					eventName = item.getEventName();
+					eventType = item.getEventType();
 					eventParameters = item.getEventParameters();
 				}
-				utils.matchOverhead(event, eventName, eventParameters);
+				utils.matchOverhead(event, eventName, eventType, eventParameters, recentActivities);
+			}
+		}
+	}
+
+	@Subscribe
+	public void onWidgetLoaded(WidgetLoaded event) {
+		// Find widget events
+		if (gameEvents != null && !fetchGameEvent) {
+			List<eventObject> eventMatch = utils.matchEvent(gameEvents, Integer.toString(event.getGroupId()), "gameEvent", "type", "loadedWidget");
+			if (!eventMatch.isEmpty()) {
+				for (eventObject item : eventMatch) {
+					eventName = item.getEventName();
+					eventType = item.getEventType();
+					eventParameters = item.getEventParameters();
+					eventWidget = event.getGroupId();
+				}
+				fetchGameEvent = true;
 			}
 		}
 	}

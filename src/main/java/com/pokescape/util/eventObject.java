@@ -29,5 +29,6 @@ import lombok.Value;
 @Value
 public class eventObject {
     String eventName;
+    String eventType;
     JsonArray eventParameters;
 }

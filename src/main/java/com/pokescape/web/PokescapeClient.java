@@ -24,10 +24,12 @@
  */
 package com.pokescape.web;
 
+import com.google.gson.JsonElement;
 import com.pokescape.PokescapeConfig;
 import com.pokescape.PokescapePlugin;
 import com.pokescape.ui.PokescapePanel;
 import com.pokescape.util.Utils;
+import com.pokescape.util.PokeScapeGoals;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.common.base.Strings;
@@ -43,6 +45,12 @@ import okhttp3.OkHttpClient;
 import okhttp3.HttpUrl;
 import okhttp3.Request;
 import okhttp3.RequestBody;
+import okhttp3.ResponseBody;
+import okio.Buffer;
+import okio.BufferedSource;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import okhttp3.Response;
 import okhttp3.MultipartBody;
 import java.io.IOException;
@@ -65,9 +73,12 @@ public class PokescapeClient {
     private @Inject PokescapeConfig config;
     private @Inject formatBody format;
     private @Inject Utils utils;
+    private @Inject PokeScapeGoals goals;
     private @Inject PokescapePanel panel;
 
     private static final String API_ENDPOINT = "https://api.pokescape.com";
+    private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    private static Call sseHandler;
     private JsonObject cacheManifest;
 
     public void status(PokescapePanel pokescapePanel) {
@@ -75,23 +86,111 @@ public class PokescapeClient {
         getRequest("/status");
     }
 
-    public void profile(PokescapePanel pokescapePanel) {
+    public void profile(PokescapePanel pokescapePanel, PokeScapeGoals pokescapeGoals) {
         panel = pokescapePanel;
+        goals = pokescapeGoals;
         postBody postBody = new postBody();
         String rsn = client.getLocalPlayer().getName();
-        long clienthash = client.getAccountHash();
+        String clientHash = Long.toString(client.getAccountHash());
         postBody.setRsn(rsn);
-        postBody.setClientHash(clienthash);
+        postBody.setClientHash(clientHash);
         postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postRequest(postBody, "/profile");
+    }
+
+    // Initialize a call instance that doesn't timeout for SSE
+    public void initSSE() {
+        OkHttpClient sseClient = new OkHttpClient().newBuilder()
+                .connectTimeout(0, TimeUnit.MINUTES)
+                .readTimeout(0, TimeUnit.MINUTES)
+                .writeTimeout(0, TimeUnit.MINUTES)
+                .build();
+        connectToSSE(API_ENDPOINT+"/sse", sseClient);
+    }
+
+    // Null out the sseHandler so scheduleReconnect doesn't reopen the connection
+    public void shutdownSSE() {
+        if (sseHandler != null) { sseHandler.cancel(); sseHandler = null; }
+    }
+
+    // If the SSE connection is interuppted, attempt to reconnect after 5 seconds
+    private void scheduleReconnect(String url, OkHttpClient sseClient) {
+        if (sseHandler != null) scheduler.schedule(() -> connectToSSE(url, sseClient), 5, TimeUnit.SECONDS);
+    }
+
+    private void connectToSSE(String url, OkHttpClient sseClient) {
+        // Build the SSE connection request
+        Request request = new Request.Builder().url(url)
+                .addHeader("Accept", "text/event-stream")
+                .addHeader("Client-Hash", Long.toString(client.getAccountHash()))
+                .build();
+
+        // Create a new call with an event listener and start the connection
+        sseHandler = sseClient.newCall(request);
+        sseHandler.enqueue(new Callback() {
+            @Override
+            public void onResponse(Call call, Response response) {
+                if (!response.isSuccessful()) {
+                    log.debug("Failed to connect to SSE endpoint. HTTP status code: " + response.code());
+                    scheduleReconnect(url, sseClient);
+                    return;
+                }
+                // Read SSE events
+                try (ResponseBody body = response.body()) {
+                    if (body != null) readSSEEvents(body);
+                } catch (Exception e) {
+                    scheduleReconnect(url, sseClient);
+                }
+            }
+            @Override
+            public void onFailure(Call call, IOException e) {
+                scheduleReconnect(url, sseClient);
+            }
+        });
+    }
+
+    private void readSSEEvents(ResponseBody body) throws IOException {
+        // Read SSE events in chunks
+        BufferedSource source = body.source();
+        Buffer buffer = new Buffer();
+        while (!source.exhausted()) {
+            source.read(buffer, 2048);
+            String event = buffer.readUtf8();
+            JsonObject eventBody;
+            try { eventBody = GSON.fromJson(event, JsonObject.class); }
+            catch (Exception e) { eventBody = new JsonObject(); }
+
+            // Validate the message and respond to events
+            if (validMessage(eventBody)) {
+                if (eventBody.has("fetchProfile") && !eventBody.get("fetchProfile").isJsonNull()) {
+                    boolean fetchProfile = eventBody.has("fetchProfile") && !eventBody.get("fetchProfile").isJsonNull() && eventBody.get("fetchProfile").getAsBoolean();
+                    if (fetchProfile) profile(panel, goals);
+                }
+                if (eventBody.has("sync") && !eventBody.get("sync").isJsonNull()) {
+                    boolean syncProfile = eventBody.has("sync") && !eventBody.get("sync").isJsonNull() && eventBody.get("sync").getAsBoolean();
+                    if (syncProfile) sync();
+                }
+            }
+        }
+    }
+
+    private boolean validMessage(JsonObject eventBody) {
+        boolean messageValid = false;
+        if (eventBody.has("id") && eventBody.get("id").isJsonArray()) {
+            JsonArray messageIDs = eventBody.get("id").getAsJsonArray();
+            for (JsonElement id : messageIDs) {
+                if (id.getAsString().equals(Long.toString(client.getAccountHash()))) messageValid = true;
+            }
+        }
+        return messageValid;
     }
 
     public void sync() {
         postBody postBody = new postBody();
         String rsn = client.getLocalPlayer().getName();
-        long clienthash = client.getAccountHash();
+        String clientHash = Long.toString(client.getAccountHash());
         postBody.setRsn(rsn);
-        postBody.setClientHash(clienthash);
+        postBody.setClientHash(clientHash);
         postBody.setPluginVersion(PokescapeConfig.PLUGIN_VERSION);
         postRequest(postBody, "/sync");
     }
@@ -102,8 +201,8 @@ public class PokescapeClient {
         postRequest(postBody, "/validation");
     }
 
-    public void gameEvent(String eventName, List<String> messageCollector, JsonObject eventInfo, JsonObject recentActivities, Integer spriteID) {
-        postBody postBody = format.event(eventName, messageCollector, eventInfo, recentActivities, spriteID);
+    public void gameEvent(String eventName, String eventType, List<String> messageCollector, JsonObject eventInfo, JsonObject recentActivities, Integer spriteID) {
+        postBody postBody = format.event(eventName, eventType, messageCollector, eventInfo, recentActivities, spriteID);
         postRequest(postBody, "/event");
     }
 
@@ -247,6 +346,10 @@ public class PokescapeClient {
                             panel.setTemporossVerification(tempoVerification);
                             panel.setGotrVerification(gotrVerification);
                         }
+                        if (responseBody.has("goals") && !responseBody.get("goals").isJsonNull()) {
+                            // TODO: Set the research description in the panel
+                            goals.setGoals(responseBody.get("goals").getAsJsonArray());
+                        }
                         if (responseBody.has("totalLevel") && !responseBody.get("totalLevel").isJsonNull()) {
                             String totalLevel = responseBody.get("totalLevel").getAsString();
                             panel.setTotalLevel(totalLevel);
@@ -264,6 +367,8 @@ public class PokescapeClient {
                                 sync();
                             }
                         }
+                        // Initialize the SSE connection if it hasn't yet been created
+                        if (sseHandler == null) initSSE();
                     }
 
                     // Update pet and events after a sync
@@ -294,19 +399,13 @@ public class PokescapeClient {
                         if (responseBody.has("validEvents") && !responseBody.get("validEvents").isJsonNull()) {
                             postBody.setValidEvents(responseBody.get("validEvents").getAsJsonArray());
                         }
-                        // Take the screenshot
-                        drawManager.requestNextFrameListener(image -> {
-                            BufferedImage bufferedImage = (BufferedImage) image;
-                            // Resize the dimensions of the screenshot to 800px before sending it off
-                            bufferedImage = resizeScreenshot(bufferedImage, 800);
-                            byte[] imageBytes = null;
-                            try {
-                                imageBytes = convertImageToByteArray(bufferedImage);
-                            } catch (IOException e) {
-                                log.error("Error converting image to byte array", e);
-                            }
-                            if (imageBytes != null) postRequest(postBody, imageBytes, route);
-                        });
+                        // If a delay is specified, wait the delay amount before taking a screenshot. Otherwise, take the screenshot
+                        if (responseBody.has("delayScreenshot") && !responseBody.get("delayScreenshot").isJsonNull()) {
+                            int delay = responseBody.get("delayScreenshot").getAsInt();
+                            scheduler.schedule(() -> requestScreenshot(postBody, route), delay, TimeUnit.MILLISECONDS);
+                        } else {
+                            requestScreenshot(postBody, route);
+                        }
                     }
                 } catch (Exception e) {
                     log.debug("Error processing response", e);
@@ -314,6 +413,21 @@ public class PokescapeClient {
                     response.close();
                 }
             }
+        });
+    }
+
+    private void requestScreenshot(postBody postBody, String route) {
+        drawManager.requestNextFrameListener(image -> {
+            BufferedImage bufferedImage = (BufferedImage) image;
+            // Resize the dimensions of the screenshot to 800px before sending it off
+            bufferedImage = resizeScreenshot(bufferedImage, 800);
+            byte[] imageBytes = null;
+            try {
+                imageBytes = convertImageToByteArray(bufferedImage);
+            } catch (IOException e) {
+                log.error("Error converting image to byte array", e);
+            }
+            if (imageBytes != null) postRequest(postBody, imageBytes, route);
         });
     }
 
