@@ -68,6 +68,7 @@ import lombok.extern.slf4j.Slf4j;
 public class PokescapeClient {
     private @Inject Client client;
     private @Inject OkHttpClient okHttpClient;
+    private @Inject OkHttpClient sseClient;
     private @Inject DrawManager drawManager;
     private @Inject PokescapePlugin plugin;
     private @Inject PokescapeConfig config;
@@ -100,7 +101,7 @@ public class PokescapeClient {
 
     // Initialize a call instance that doesn't timeout for SSE
     public void initSSE() {
-        OkHttpClient sseClient = new OkHttpClient().newBuilder()
+        sseClient = new OkHttpClient().newBuilder()
                 .connectTimeout(0, TimeUnit.MINUTES)
                 .readTimeout(0, TimeUnit.MINUTES)
                 .writeTimeout(0, TimeUnit.MINUTES)
