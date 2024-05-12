@@ -92,6 +92,8 @@ public class PokeScapeGoals {
     private final LinkedHashMap<Integer, String> damageMap = new LinkedHashMap<>();
     private final List<Integer> varbitFilter = new ArrayList<>();
     private final List<Integer> scriptFilter = new ArrayList<>();
+    private int hitsplatCount;
+    private int totalDamage;
 
     public void startUp() {
         clearState();
@@ -296,7 +298,11 @@ public class PokeScapeGoals {
         // Evaluate the goal requirements each time damage is dealt (on the next tick) or taken
         if (event.getActor().toString().equals(lastTargetInstance) && playerState.has("lastDmgDealt")) {
             playerState.addProperty("lastDmgDealt", event.getHitsplat().getAmount());
-            clientThread.invokeLater(() -> attackedFromFullHP(event));
+            // We sum of all damage dealt to the NPC this tick so we have the total damage available to process the next tick
+            // This is needed to get the correct damage output from scythe, claw/hally specs, damage stacked with venge/thralls, etc.
+            hitsplatCount += 1;
+            totalDamage += event.getHitsplat().getAmount();
+            clientThread.invokeLater(() -> attackedFromFullHP(event, totalDamage, hitsplatCount));
         }
         if (event.getActor().toString().equals(client.getLocalPlayer().toString()) && playerState.has("lastDmgTaken"))
             playerState.addProperty("lastDmgTaken", event.getHitsplat().getAmount());
@@ -318,9 +324,9 @@ public class PokeScapeGoals {
     private void onActorDeath(ActorDeath event) {
         if (playerState == null || gameActivities == null) return;
         clientThread.invokeLater(() -> {
-            String npcInst = event.getActor().toString();
             for (int i = 0; i < activeGoals.size(); i++) {
                 JsonObject goal = activeGoals.get(i).getAsJsonObject();
+                String npcInst = goal.has("trackName") ? event.getActor().getName() : event.getActor().toString();
                 if (goal.has("validTargets") && goal.get("validTargets").isJsonArray()) {
                     JsonArray validTargets = goal.getAsJsonArray("validTargets");
                     JsonArray validTargetsDmg = goal.has("validTargetsDmg") ? goal.getAsJsonArray("validTargetsDmg") : new JsonArray();
@@ -331,9 +337,11 @@ public class PokeScapeGoals {
                     if (validExists) {
                         // Evaluate the goal requirements each time an NPC dies
                         if (playerState.has("npcValidDeath")) playerState.addProperty("npcValidDeath", event.getActor().getName());
+                        if (playerState.has("itemsOnNPCDeath")) playerState.add("itemsOnNPCDeath", utils.getPlayerItems());
                         evaluateGoal();
                         // Remove the npc from the list of targets after evaluation
                         if (playerState.has("npcValidDeath")) playerState.add("npcValidDeath", null);
+                        if (playerState.has("itemsOnNPCDeath")) playerState.add("itemsOnNPCDeath", null);
                         for (int x = 0; x < validTargets.size(); x++) {
                             if (validTargets.get(x).getAsString().equals(npcInst)) {
                                 validTargets.remove(x);
@@ -490,10 +498,13 @@ public class PokeScapeGoals {
         if (playerState.has("lastLocation")) playerState.add("lastLocation", utils.getPlayerLocation());
     }
 
-    private void attackedFromFullHP(HitsplatApplied event) {
+    private void attackedFromFullHP(HitsplatApplied event, int damageDealt, int hitsplatCount) {
+        // We're only interested in the total damage dealt on the npc in a single tick
+        // This returns all except the first hitsplat event (which includes damage from other hitsplats)
+        if (hitsplatCount < 1) return;
+
         // Get the health ratios, damage dealt and max HP of the attacked NPC
         String npcName = Text.removeTags(event.getActor().getName());
-        int damageDealt = event.getHitsplat().getAmount();
         int[] npcHP; int npcCurrentHP = 0; int npcMaxHP = 0;
 
         // If there's an HP overlay: Retrieve the current and max HP values directly from the overlay
@@ -510,8 +521,8 @@ public class PokeScapeGoals {
         if (activeGoals != null) {
             for (int i = 0; i < activeGoals.size(); i++) {
                 JsonObject goal = activeGoals.get(i).getAsJsonObject();
+                String npcInst = goal.has("trackName") ? event.getActor().getName() : event.getActor().toString();
                 boolean invalidTarget = false;
-                String npcInst = event.getActor().toString();
 
                 // If max HP is provided, use that value instead
                 npcMaxHP = (goal.has("npcMaxHP") && !goal.get("npcMaxHP").isJsonNull()) ? goal.get("npcMaxHP").getAsInt() : npcMaxHP;
@@ -521,7 +532,7 @@ public class PokeScapeGoals {
                     if (goal.has("invalidTargets") && goal.get("invalidTargets").isJsonArray()) {
                         JsonArray invalidTargets = goal.get("invalidTargets").getAsJsonArray();
                         for (JsonElement target : invalidTargets) {
-                            if (Objects.equals(target.getAsString(), npcInst)) {
+                            if (Objects.equals(target.getAsString(), event.getActor().toString())) {
                                 invalidTarget = true;
                                 break;
                             }
@@ -571,6 +582,8 @@ public class PokeScapeGoals {
                 }
             }
         }
+        this.totalDamage = 0;
+        this.hitsplatCount = 0;
         evaluateGoal();
     }
 
@@ -644,15 +657,6 @@ public class PokeScapeGoals {
         // Determine if the playerState matches any conditions that would make the player fail their research
         for (JsonElement goalCondition : goalConditions) {
             JsonObject conditionParams = goalCondition.getAsJsonObject();
-
-            // Optionally check if the player's last npc target was the goal target
-            Boolean engagedWithTarget = (conditionParams.has("engagedWithTarget") && !conditionParams.get("engagedWithTarget").isJsonNull()) ?
-                    conditionParams.get("engagedWithTarget").getAsBoolean() : null;
-            String lastTargetName = (playerState.has("lastTargetName") && !playerState.get("lastTargetName").isJsonNull()) ?
-                    playerState.get("lastTargetName").getAsString() : null;
-            String targetStartName = (goal.has("npcTarget")) ? goal.get("npcTarget").getAsString() : "";
-            boolean engagementRequiredAndPassing = Boolean.TRUE.equals(engagedWithTarget) && (Objects.equals(lastTargetName, targetStartName));
-            if (!Boolean.TRUE.equals(engagedWithTarget)) engagementRequiredAndPassing = true;
 
             // If a tracked value is saved in an array, retrieve the value using an index key
             String receivedValue = "null";
@@ -768,7 +772,7 @@ public class PokeScapeGoals {
             }
 
             // Advance the goal if any matching conditions are found
-            if (goalMatched && engagementRequiredAndPassing) {
+            if (goalMatched && primaryEngaged(goal, conditionParams)) {
                 if (goalType.equals("goalStart")) { goalStart(goal, conditionParams); break; }
                 if (goalType.equals("goalCheckpoint")) goalCheckpoint(goal, conditionParams);
                 if (goalType.equals("goalLost")) goalLost(goal, conditionParams);
@@ -780,9 +784,7 @@ public class PokeScapeGoals {
     private void goalStart(JsonObject goal, JsonObject conditionParams) {
         // Set the goal state to "started"
         String goalState = (goal.has("goalState") && !goal.get("goalState").isJsonNull()) ? goal.get("goalState").getAsString() : "";
-        String npcName = (playerState.has("lastTargetName") && !playerState.get("lastTargetName").isJsonNull()) ? playerState.get("lastTargetName").getAsString() : "";
         goal.addProperty("goalState", "started");
-        goal.addProperty("npcTarget", npcName);
 
         // Reset the playerState and tracked stats
         resetPlayerState();
@@ -824,7 +826,6 @@ public class PokeScapeGoals {
                 goal.add("invalidTargets", invalidTargets);
             }
         }
-        if (goal.has("npcTarget")) goal.addProperty("npcTarget", "");
         if (goal.has("validTargets")) goal.add("validTargets", new JsonArray());
         if (goal.has("validTargetsDmg")) goal.add("validTargetsDmg", new JsonArray());
     }
@@ -841,6 +842,7 @@ public class PokeScapeGoals {
         String checkpointOp = (conditionParams.has("cpOp") && !conditionParams.get("cpOp").isJsonNull()) ? conditionParams.get("cpOp").getAsString() : null;
         String valueType = (conditionParams.has("valueType") && !conditionParams.get("valueType").isJsonNull()) ? conditionParams.get("valueType").getAsString() : null;
         String baseType = (conditionParams.has("baseType") && !conditionParams.get("baseType").isJsonNull()) ? conditionParams.get("baseType").getAsString() : null;
+        int setIndex = (conditionParams.has("cpIndex") && !conditionParams.get("cpIndex").isJsonNull()) ? conditionParams.get("cpIndex").getAsInt() : -1;
         int valueInt = 0; String valueString = ""; int baseInt = 0; JsonArray baseArray = new JsonArray();
         if (valueType != null && baseType != null && checkpointOp != null && checkpointRef != null && goal.has(checkpointRef)) {
             switch (valueType) {
@@ -851,11 +853,19 @@ public class PokeScapeGoals {
                 case ("int"): baseInt = goal.get(checkpointRef).getAsInt(); break;
                 case ("array"): baseArray = goal.get(checkpointRef).getAsJsonArray(); break;
             }
-            switch (checkpointOp) {
-                case ("+"): goal.addProperty(checkpointRef, baseInt+valueInt); break;
-                case ("-"): goal.addProperty(checkpointRef, baseInt-valueInt); break;
-                case ("pushInt"): baseArray.add(valueInt); goal.add(checkpointRef, baseArray); break;
-                case ("pushStr"): baseArray.add(valueString); goal.add(checkpointRef, baseArray); break;
+            if (setIndex == -1) {
+                switch (checkpointOp) {
+                    case ("+"): goal.addProperty(checkpointRef, baseInt+valueInt); break;
+                    case ("-"): goal.addProperty(checkpointRef, baseInt-valueInt); break;
+                    case ("pushInt"): baseArray.add(valueInt); goal.add(checkpointRef, baseArray); break;
+                    case ("pushStr"): baseArray.add(valueString); goal.add(checkpointRef, baseArray); break;
+                }
+            }
+            if (setIndex > -1) {
+                switch (checkpointOp) {
+                    case ("+"): baseArray.set(setIndex, new JsonPrimitive(baseArray.get(setIndex).getAsInt()+valueInt)); goal.add(checkpointRef, baseArray); break;
+                    case ("-"): baseArray.set(setIndex, new JsonPrimitive(baseArray.get(setIndex).getAsInt()-valueInt)); goal.add(checkpointRef, baseArray); break;
+                }
             }
         }
 
@@ -865,6 +875,7 @@ public class PokeScapeGoals {
         // Notify the player that they've made progress on their research task
         if (checkpointRef != null && conditionParams.has("notify") && conditionParams.get("notify").isJsonArray()) {
             String updatedValue = goal.get(checkpointRef).toString();
+            JsonArray updatedArray = (goal.get(checkpointRef).isJsonArray()) ? goal.get(checkpointRef).getAsJsonArray() : null;
             JsonArray lostNotify = conditionParams.get("notify").getAsJsonArray();
             // $cpRef is a control word that is replaced with the saved checkpoint value
             // $plural is a control word that picks the singular or plural form of a word if $cpRef is = 1 or != 1
@@ -875,6 +886,7 @@ public class PokeScapeGoals {
                 lostNotify.get(i).getAsJsonObject().entrySet().forEach(entry -> msgObj.add(entry.getKey(), entry.getValue()));
                 if (msgObj.has("message") && !msgObj.get("message").isJsonNull()) {
                     message = msgObj.get("message").getAsString();
+                    if (updatedArray != null && setIndex != -1) updatedValue = updatedArray.get(setIndex).getAsString();
                     if (isParsableAsInt(updatedValue)) {
                         message = message.replace("$cpRef", updatedValue);
                         String pluralKey = (Integer.parseInt(updatedValue) == 1) ? "$1" : "$2";
@@ -961,19 +973,55 @@ public class PokeScapeGoals {
                 }
             }
             if (baseType.equals("array") && goalType.equals("array")) {
-                switch (checkpointOp) {
-                    case ("containsAll"): checkpointsComplete = baseSet.containsAll(goalSet); break;
-                    case ("doesNotContainAll"): checkpointsComplete = !baseSet.containsAll(goalSet); break;
+                boolean matchEachIndex = conditionParams.has("matchEachIndex");
+                if (!matchEachIndex) {
+                    switch (checkpointOp) {
+                        case ("containsAll"): checkpointsComplete = baseSet.containsAll(goalSet); break;
+                        case ("doesNotContainAll"): checkpointsComplete = !baseSet.containsAll(goalSet); break;
+                    }
+                }
+                if (matchEachIndex) {
+                    if (baseArray.size() == goalArray.size()) {
+                        boolean indexesMatch = true;
+                        comparator:
+                        for (int i = 0; i < goalArray.size(); i++) {
+                            switch (checkpointOp) {
+                                case ("=="): if (baseArray.get(i) != goalArray.get(i)) { indexesMatch = false; break comparator; } break;
+                                case ("!="): if (baseArray.get(i) == goalArray.get(i)) { indexesMatch = false; break comparator; } break;
+                                case (">"): if (baseArray.get(i).getAsInt() <= goalArray.get(i).getAsInt()) { indexesMatch = false; break comparator; } break;
+                                case ("<"): if (baseArray.get(i).getAsInt() >= goalArray.get(i).getAsInt()) { indexesMatch = false; break comparator; } break;
+                                case (">="): if (baseArray.get(i).getAsInt() < goalArray.get(i).getAsInt()) { indexesMatch = false; break comparator; } break;
+                                case ("<="): if (baseArray.get(i).getAsInt() > goalArray.get(i).getAsInt()) { indexesMatch = false; break comparator; } break;
+                            }
+                        }
+                        checkpointsComplete = indexesMatch;
+                    }
                 }
             }
         }
         return (!checkpointsComplete && checkpointOp != null);
     }
 
+    private boolean primaryEngaged(JsonObject goal, JsonObject conditionParams) {
+        // Return true if the goal condition is indepedent of the primary target
+        boolean engagedWithPrimary = conditionParams.has("engagedWithPrimary");
+        if (!engagedWithPrimary) return true;
+
+        // Return true/false if the goal condition is dependent on the primary target(s)
+        String lastTargetName = (playerState.has("lastTargetName") && !playerState.get("lastTargetName").isJsonNull()) ? playerState.get("lastTargetName").getAsString() : "";
+        JsonArray primaryTargets = (goal.has("primaryTargets") && goal.get("primaryTargets").isJsonArray()) ? goal.get("primaryTargets").getAsJsonArray() : new JsonArray();
+        boolean primaryEngaged = false;
+        for (JsonElement target : primaryTargets) {
+            if (target.getAsString().equals(lastTargetName)) { primaryEngaged = true; break; }
+        }
+        return primaryEngaged;
+    }
+
     private boolean invalidDamage(JsonObject goal, JsonObject conditionParams) {
         boolean validTargetInvalidDamage = false;
         if (conditionParams.has("enforceMinDmg") && !conditionParams.get("enforceMinDmg").isJsonNull()) {
             String npcInst = (playerState.has("lastTargetInstance") && !playerState.get("lastTargetInstance").isJsonNull()) ? playerState.get("lastTargetInstance").getAsString() : "";
+            if (goal.has("trackName")) npcInst = (playerState.has("lastTargetName") && !playerState.get("lastTargetName").isJsonNull()) ? playerState.get("lastTargetName").getAsString() : "";
             if (goal.has("validTargets") && goal.get("validTargets").isJsonArray()) {
                 JsonArray validTargets = goal.getAsJsonArray("validTargets");
                 JsonArray validTargetsDmg = goal.has("validTargetsDmg") ? goal.getAsJsonArray("validTargetsDmg") : null;
@@ -1012,7 +1060,7 @@ public class PokeScapeGoals {
         if (conditionParams.has("cpRef") && conditionParams.has("cpResetRef")) {
             String checkpointRef = (!conditionParams.get("cpRef").isJsonNull()) ? conditionParams.get("cpRef").getAsString() : null;
             String resetRef = (!conditionParams.get("cpResetRef").isJsonNull()) ? conditionParams.get("cpResetRef").getAsString() : null;
-            JsonArray resetArray = (goal.has(resetRef) && goal.get(resetRef).isJsonArray()) ? new JsonArray() : null;
+            JsonArray resetArray = (goal.has(resetRef) && goal.get(resetRef).isJsonArray()) ? copyJsonArray(goal.get(resetRef).getAsJsonArray()) : null;
             if (checkpointRef != null && resetRef != null) {
                 if (resetArray != null) goal.add(checkpointRef, resetArray);
                 else goal.add(checkpointRef, goal.get(resetRef));
@@ -1032,6 +1080,12 @@ public class PokeScapeGoals {
                 }
             }
         }
+    }
+
+    private static JsonArray copyJsonArray(JsonArray originalArray) {
+        JsonArray newArray = new JsonArray();
+        originalArray.forEach(newArray::add);
+        return newArray;
     }
 
     // Prevents NPCs being reevaluated if they were invalidated
