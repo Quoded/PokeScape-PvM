@@ -147,7 +147,8 @@ public class PokeScapeGoals {
             if (!playerNotified && goal.has("goalNotify") && !goal.get("goalNotify").isJsonNull()) {
                 activeGoals.get(i).getAsJsonObject().addProperty("playerNotified", true);
                 JsonArray goalNotification = goal.get("goalNotify").getAsJsonArray();
-                if (goal.get("goalNotify").isJsonArray()) utils.sendLocalChatMsg(goalNotification);
+                if (goalNotification.isJsonArray()) utils.sendLocalChatMsg(goalNotification);
+                if (gameActivities != null && playerState != null) unknownStatus(goal, playerState);
             }
         }
 
@@ -185,17 +186,16 @@ public class PokeScapeGoals {
                 for (int i = 0; i < dmg.size(); i++) damageMap.put(dmg.get(i).getAsInt(), source.get(i).getAsString());
             }
             if (gameActivities.has("trackedVarbits") && gameActivities.get("trackedVarbits").getAsJsonObject().get("varbits").isJsonArray() &&
-                gameActivities.get("trackedVarbits").getAsJsonObject().get("varTypes").isJsonArray()) {
+                gameActivities.get("trackedVarbits").getAsJsonObject().get("varTypes").isJsonArray()  &&
+                gameActivities.get("trackedVarbits").getAsJsonObject().get("initValues").isJsonArray()) {
                 JsonArray varbits = gameActivities.get("trackedVarbits").getAsJsonObject().get("varbits").getAsJsonArray();
                 JsonArray varTypes = gameActivities.get("trackedVarbits").getAsJsonObject().get("varTypes").getAsJsonArray();
-                JsonArray initialVarbitValues = new JsonArray();
-                for (int i = 0; i < varbits.size(); i++) {
-                    varbitFilter.add(varbits.get(i).getAsInt());
-                    initialVarbitValues.add(0);
-                }
+                JsonArray initValues = gameActivities.get("trackedVarbits").getAsJsonObject().get("initValues").getAsJsonArray();
+                for (int i = 0; i < varbits.size(); i++) varbitFilter.add(varbits.get(i).getAsInt());
                 playerState.add("trackedVarbits", varbits);
                 playerState.add("varTypes", varTypes);
-                playerState.add("lastVarbitValues", initialVarbitValues);
+                playerState.add("initVarbitValues", initValues);
+                playerState.add("lastVarbitValues", initValues);
             }
             if (gameActivities.has("trackedScripts") && gameActivities.get("trackedScripts").getAsJsonObject().get("scripts").isJsonArray()) {
                 JsonArray scripts = gameActivities.get("trackedScripts").getAsJsonObject().get("scripts").getAsJsonArray();
@@ -203,6 +203,38 @@ public class PokeScapeGoals {
             }
             if (gameActivities.has("lastGearAndItems")) playerState.add("lastGearAndItems", utils.getPlayerItems());
             if (gameActivities.has("lastLocation")) playerState.add("lastLocation", utils.getPlayerLocation());
+
+            for (int i = 0; i < activeGoals.size(); i++) {
+                JsonObject goal = activeGoals.get(i).getAsJsonObject();
+                unknownStatus(goal, playerState);
+            }
+        }
+    }
+
+    private void unknownStatus(JsonObject goal, JsonObject playerState) {
+        if (goal.has("checkVarbits") && goal.get("checkVarbits").isJsonArray() && goal.has("varbitNotify") && goal.get("varbitNotify").isJsonArray()
+                && gameActivities.has("trackedVarbits") && gameActivities.get("trackedVarbits").getAsJsonObject().get("varbits").isJsonArray() &&
+                gameActivities.get("trackedVarbits").getAsJsonObject().get("initValues").isJsonArray() &&
+                playerState.has("lastVarbitValues") && playerState.get("lastVarbitValues").isJsonArray()) {
+
+            // Create a searchable map of varbits with their initialized and current values
+            LinkedHashMap<Integer, int[]> varbitMap = new LinkedHashMap<>();
+            JsonArray varbits = gameActivities.get("trackedVarbits").getAsJsonObject().get("varbits").getAsJsonArray();
+            JsonArray initValues = gameActivities.get("trackedVarbits").getAsJsonObject().get("initValues").getAsJsonArray();
+            JsonArray lastVarbitValues = playerState.get("lastVarbitValues").getAsJsonArray();
+            for (int i = 0; i < varbits.size(); i++) varbitMap.put(varbits.get(i).getAsInt(), new int[]{initValues.get(i).getAsInt(),lastVarbitValues.get(i).getAsInt()});
+
+            // Notify the player if their playerstate is in an unknown state that the research requires
+            boolean unknownState = false;
+            JsonArray varbitsToCheck = goal.get("checkVarbits").getAsJsonArray();
+            for (JsonElement varbElem : varbitsToCheck) {
+                int[] varbitValue = varbitMap.get(varbElem.getAsInt());
+                if (varbitValue[0] == varbitValue[1]) { unknownState = true; break; }
+            }
+            if (unknownState) {
+                JsonArray varbitNotification = goal.get("varbitNotify").getAsJsonArray();
+                if (varbitNotification.isJsonArray()) utils.sendLocalChatMsg(varbitNotification);
+            }
         }
     }
 
@@ -423,24 +455,25 @@ public class PokeScapeGoals {
 
     private void trackVarbitChanges(int[] updatedVarbit) {
         if (playerState.has("trackedVarbits") && playerState.get("trackedVarbits").isJsonArray() &&
-            playerState.has("varTypes") && playerState.get("varTypes").isJsonArray()) {
+                playerState.has("varTypes") && playerState.get("varTypes").isJsonArray()) {
             JsonArray trackedVarbits = playerState.get("trackedVarbits").getAsJsonArray();
             JsonArray trackedVarbTypes = playerState.get("varTypes").getAsJsonArray();
             JsonArray trackedVarbitValues = new JsonArray();
             for (int i = 0; i < trackedVarbits.size(); i++) {
                 int varbType = trackedVarbTypes.get(i).getAsInt();
                 // If a tracked varbit was updated, save the new value to the playerstate and evaluate the goal
-                // Otherwise, save the previous value of the varbit or initialize it at 0
+                // Otherwise, save the previous value of the varbit or initialize it with its default value (unknown)
                 if (trackedVarbits.get(i).getAsInt() == updatedVarbit[varbType]) {
                     trackedVarbitValues.add(updatedVarbit[2]);
-                    evaluateGoal();
                 } else {
                     int lastVarbitValue = (playerState.has("lastVarbitValues") && playerState.get("lastVarbitValues").isJsonArray()) ?
-                    playerState.get("lastVarbitValues").getAsJsonArray().get(i).getAsInt() : 0;
+                            playerState.get("lastVarbitValues").getAsJsonArray().get(i).getAsInt() : (playerState.has("lastVarbitValues")
+                            && playerState.get("lastVarbitValues").isJsonArray()) ? playerState.get("initVarbitValues").getAsJsonArray().get(i).getAsInt() : -1;
                     trackedVarbitValues.add(lastVarbitValue);
                 }
             }
             playerState.add("lastVarbitValues", trackedVarbitValues);
+            evaluateGoal();
         }
     }
 
@@ -522,12 +555,13 @@ public class PokeScapeGoals {
             for (int i = 0; i < activeGoals.size(); i++) {
                 JsonObject goal = activeGoals.get(i).getAsJsonObject();
                 String npcInst = goal.has("trackName") ? event.getActor().getName() : event.getActor().toString();
+                boolean ignoreHPCheck = goal.has("ignoreHPCheck");
                 boolean invalidTarget = false;
 
                 // If max HP is provided, use that value instead
                 npcMaxHP = (goal.has("npcMaxHP") && !goal.get("npcMaxHP").isJsonNull()) ? goal.get("npcMaxHP").getAsInt() : npcMaxHP;
                 int hpThreshold = (int) Math.ceil((double) npcMaxHP / 100) + 1;
-                if (Math.abs((npcMaxHP - damageDealt) - npcCurrentHP) <= hpThreshold) {
+                if ((Math.abs((npcMaxHP - damageDealt) - npcCurrentHP) <= hpThreshold) || ignoreHPCheck) {
                     // Check if the attacked npc has been marked as invalid (from a previous failed goal attempt)
                     if (goal.has("invalidTargets") && goal.get("invalidTargets").isJsonArray()) {
                         JsonArray invalidTargets = goal.get("invalidTargets").getAsJsonArray();
