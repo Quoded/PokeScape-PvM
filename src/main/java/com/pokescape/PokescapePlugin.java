@@ -103,12 +103,15 @@ public class PokescapePlugin extends Plugin {
 	private String eventType;
 	private JsonArray eventParameters;
 	private int eventWidget;
+	private final JsonObject containerEvents = new JsonObject();
 	private JsonObject recentActivities = new JsonObject();
 	private final List<String> messageCollector = new ArrayList<>();
 	private boolean fetchProfile;
 	private boolean fetchGameEvent;
+	private int delayedGameEventTick;
 	private int delayedMsgCleanupTick;
 	private int delayedSubmitTick;
+	private int delayDupeWidget;
 	private final ArrayList<Object> lootObject = new ArrayList <>();
 
 	@Override
@@ -131,9 +134,7 @@ public class PokescapePlugin extends Plugin {
 		overlay = null;
 	}
 
-	public void setGameEvents(JsonObject events) {
-		gameEvents = events;
-	}
+	public void setGameEvents(JsonObject events) { gameEvents = events; setContainerEvents(events); }
 	public void setAllowBlockList(JsonObject allowblock) {
 		allowBlockList = allowblock;
 	}
@@ -144,8 +145,28 @@ public class PokescapePlugin extends Plugin {
 	public JsonObject getPlayerState() {
 		return recentActivities;
 	}
+	public void setPlayerState(JsonObject playerState) { recentActivities = playerState; }
 	public List<String> getMessageCollector() {
 		return messageCollector;
+	}
+	public void setDelayDupeWidget(int value) { delayDupeWidget = value; }
+
+	public JsonObject getContainerEvents() {
+		return containerEvents;
+	}
+	public void setContainerEvents(JsonObject events) {
+		events.keySet().forEach(keyName -> {
+			JsonObject keyObj = events.get(keyName).getAsJsonObject();
+			String filterKeyValue = keyObj.get("type").getAsString();
+			if (filterKeyValue.equals("containerUpdate")) {
+				JsonArray itemIDs = (keyObj.has("items") && !keyObj.get("items").isJsonNull()) ? keyObj.get("items").getAsJsonArray() : new JsonArray();
+				JsonArray eventParameters = (keyObj.has("param") && !keyObj.get("param").isJsonNull()) ? keyObj.get("param").getAsJsonArray() : new JsonArray();
+				JsonObject eventObject = new JsonObject();
+				eventObject.add("items", itemIDs);
+				eventObject.add("param", eventParameters);
+				containerEvents.add(keyName, eventObject);
+			}
+		});
 	}
 
 	private void initPanel() {
@@ -167,13 +188,21 @@ public class PokescapePlugin extends Plugin {
 	@Subscribe
 	public void onGameStateChanged(GameStateChanged gameStateChanged) {
 		GameState gameState = gameStateChanged.getGameState();
-		if (gameState != GameState.LOGGED_IN && gameState != GameState.LOGIN_SCREEN && gameState != GameState.HOPPING) return;
+		if (gameState != GameState.LOGGED_IN && gameState != GameState.LOGIN_SCREEN && gameState != GameState.HOPPING && gameState != GameState.LOGGING_IN) return;
 
 		// Return if the game state updates between loading areas (LOGGED_IN -> LOADING -> LOGGED_IN...etc)
 		boolean isNewGameState = gameState != currentGameState;
 		if (gameState == GameState.HOPPING) isNewGameState = true;
 		if (!isNewGameState) return;
+
+		// Connect to SSE if logging in from the title screen
+		if (currentGameState == GameState.LOGGING_IN && gameState == GameState.LOGGED_IN) sendRequest.initSSE();
+
+		// Set the current gameState
 		currentGameState = gameState;
+
+		// Disconnect from SSE on logout to title screen
+		if (gameState == GameState.LOGIN_SCREEN) sendRequest.shutdownSSE();
 
 		// Set a flag to send a profile request after player login/hop
 		if (gameState == GameState.LOGGED_IN) fetchProfile = true;
@@ -187,7 +216,7 @@ public class PokescapePlugin extends Plugin {
 			fetchProfile = !fetchProfile;
 		}
 		// Process events when a matching event is found
-		if (fetchGameEvent) {
+		if (fetchGameEvent && --delayedGameEventTick < 0) {
 			int spriteID = fetchWidgetSprite();
 			utils.processEvent(eventName, eventType, eventParameters, eventWidget, messageCollector, recentActivities, spriteID);
 			fetchGameEvent = !fetchGameEvent;
@@ -209,6 +238,9 @@ public class PokescapePlugin extends Plugin {
 		if (--delayedMsgCleanupTick < 0) {
 			messageCollector.clear();
 		}
+
+		// Filters out duplicate widget events when positive
+		--delayDupeWidget;
 	}
 
 	private int fetchWidgetSprite() {
@@ -282,10 +314,16 @@ public class PokescapePlugin extends Plugin {
 						catch (Exception e) { delayedSubmitTick = 2; }
 					}
 					// delayMsgCleanup parameter temporarily prevents the message collector from being cleared
-					// Some bosses (Nightmare, Duke) fire onLootReceived in a future game tick
+					// Some bosses (Nightmare, Duke) fire onLootReceived on a future game tick
 					if (eventParam.startsWith("delayMsgCleanup")) {
 						try { delayedMsgCleanupTick = Integer.parseInt(eventParam.split("delayMsgCleanup=")[1]); }
 						catch (Exception e) { delayedMsgCleanupTick = 2; }
+					}
+					// delayFetch parameter temporarily prevents an event from being processed
+					// This is useful if waiting for other events unrelated to this event
+					if (eventParam.startsWith("delayFetch")) {
+						try { delayedGameEventTick = Integer.parseInt(eventParam.split("delayFetch=")[1]); }
+						catch (Exception e) { delayedGameEventTick = 2; }
 					}
 					// suppressFetch parameters blocks an event from being sent back to the server
 					if (eventParam.startsWith("suppressFetch")) fetchGameEvent = false;
@@ -316,7 +354,7 @@ public class PokescapePlugin extends Plugin {
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event) {
 		// Find widget events
-		if (gameEvents != null && !fetchGameEvent) {
+		if (gameEvents != null && !fetchGameEvent && delayDupeWidget <= 0) {
 			List<eventObject> eventMatch = utils.matchEvent(gameEvents, Integer.toString(event.getGroupId()), "gameEvent", "type", "loadedWidget");
 			if (!eventMatch.isEmpty()) {
 				for (eventObject item : eventMatch) {
@@ -326,6 +364,16 @@ public class PokescapePlugin extends Plugin {
 					eventWidget = event.getGroupId();
 				}
 				fetchGameEvent = true;
+				// Events with parameters that manipulate timing need to be processed immediately
+				for (JsonElement param : eventParameters) {
+					String eventParam = param.getAsString();
+					// Used if the widget will be overwritten/unavailable the next tick
+					if (eventParam.startsWith("processSameTick")) {
+						utils.processEvent(eventName, eventType, eventParameters, eventWidget, messageCollector, recentActivities, -1);
+					}
+					// suppressFetch parameters blocks events from being sent back to the server
+					if (eventParam.startsWith("suppressFetch")) fetchGameEvent = false;
+				}
 			}
 		}
 	}

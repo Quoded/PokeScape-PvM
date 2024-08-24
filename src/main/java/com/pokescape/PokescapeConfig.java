@@ -32,7 +32,7 @@ import net.runelite.client.config.ConfigSection;
 
 @ConfigGroup("pokescape")
 public interface PokescapeConfig extends Config {
-	String PLUGIN_VERSION = "0.5.3";
+	String PLUGIN_VERSION = "0.6.0";
 
 	enum SnapMode {
 		INV("Top of Inventory"), CHATBOX("Top of Chatbox"), OFF("Off (Alt-Drag)");

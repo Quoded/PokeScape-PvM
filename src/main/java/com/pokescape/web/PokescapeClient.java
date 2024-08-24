@@ -79,6 +79,7 @@ public class PokescapeClient {
 
     private static final String API_ENDPOINT = "https://api.pokescape.com";
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    private int reconnectTimeout = 0;
     private static Call sseHandler;
     private JsonObject cacheManifest;
 
@@ -101,6 +102,7 @@ public class PokescapeClient {
 
     // Initialize a call instance that doesn't timeout for SSE
     public void initSSE() {
+        shutdownSSE();
         sseClient = sseClient.newBuilder().connectTimeout(0, TimeUnit.MINUTES).readTimeout(0, TimeUnit.MINUTES).writeTimeout(0, TimeUnit.MINUTES).build();
         connectToSSE(API_ENDPOINT+"/sse", sseClient);
     }
@@ -110,9 +112,10 @@ public class PokescapeClient {
         if (sseHandler != null) { sseHandler.cancel(); sseHandler = null; }
     }
 
-    // If the SSE connection is interuppted, attempt to reconnect after 5 seconds
+    // If the SSE connection is interuppted: First attempt to reconnect instantly, then every 5 seconds
     private void scheduleReconnect(String url, OkHttpClient sseClient) {
-        if (sseHandler != null) scheduler.schedule(() -> connectToSSE(url, sseClient), 5, TimeUnit.SECONDS);
+        if (sseHandler != null) scheduler.schedule(() -> connectToSSE(url, sseClient), reconnectTimeout, TimeUnit.SECONDS);
+        reconnectTimeout = 5;
     }
 
     private void connectToSSE(String url, OkHttpClient sseClient) {
@@ -136,7 +139,8 @@ public class PokescapeClient {
                 try (ResponseBody body = response.body()) {
                     if (body != null) readSSEEvents(body);
                 } catch (Exception e) {
-                    scheduleReconnect(url, sseClient);
+                    try { if (!e.getMessage().equals("Socket closed")) { scheduleReconnect(url, sseClient); }
+                    } catch (Exception f) { scheduleReconnect(url, sseClient); }
                 }
             }
             @Override
@@ -148,6 +152,7 @@ public class PokescapeClient {
 
     private void readSSEEvents(ResponseBody body) throws IOException {
         // Read SSE events in chunks
+        reconnectTimeout = 0;
         BufferedSource source = body.source();
         Buffer buffer = new Buffer();
         while (!source.exhausted()) {
@@ -177,6 +182,7 @@ public class PokescapeClient {
             JsonArray messageIDs = eventBody.get("id").getAsJsonArray();
             for (JsonElement id : messageIDs) {
                 if (id.getAsString().equals(Long.toString(client.getAccountHash()))) messageValid = true;
+                if (id.getAsString().equals("all")) messageValid = true;
             }
         }
         return messageValid;
@@ -327,6 +333,13 @@ public class PokescapeClient {
                     if (responseBody.has("localChatMsg") && !responseBody.get("localChatMsg").isJsonNull()) {
                         JsonArray messageStructure = responseBody.get("localChatMsg").getAsJsonArray();
                         if (messageStructure.isJsonArray()) utils.sendLocalChatMsg(messageStructure);
+                    }
+
+                    // Reinitialize SSE
+                    if (responseBody.has("initSSE") && !responseBody.get("initSSE").isJsonNull()) {
+                        if (sseHandler != null) sseHandler.cancel();
+                        sseHandler = null;
+                        initSSE();
                     }
 
                     // Update the side panel with the player's team info and verification status

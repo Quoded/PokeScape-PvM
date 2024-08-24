@@ -169,7 +169,7 @@ public class PokescapePanel extends PluginPanel {
         verificationContent.add(gotrLabel, createGbc(113, 0, 0, 0));
         gotrVerificationLabel = new JLabel();
         setGotrVerification(false);
-        if (!getGotrVerification()) gotrVerificationLabel.setToolTipText("Use the \"Check\" option on the Rewards Guardian to verify your energy. \r\nYou must have 0 catalytic and 0 elemental energy to pass verification.");
+        if (!getGotrVerification()) gotrVerificationLabel.setToolTipText("Use the \"Check\" option on the Rewards Guardian to verify your energy. \r\nYou must have 0-1 catalytic and 0-1 elemental energy to pass verification.");
         verificationContent.add(gotrVerificationLabel, createGbc(155, 0, 0, 0));
         collapseModal verificationPanel = new collapseModal("Minigame Verification", verificationContent);
         infoPanel.add(verificationPanel);

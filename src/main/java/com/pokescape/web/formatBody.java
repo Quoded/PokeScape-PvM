@@ -24,9 +24,10 @@
  */
 package com.pokescape.web;
 
+import com.pokescape.PokescapeConfig;
+import com.pokescape.util.Utils;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.pokescape.PokescapeConfig;
 import com.google.common.collect.ImmutableSet;
 import com.google.gson.JsonObject;
 import lombok.extern.slf4j.Slf4j;
@@ -48,6 +49,7 @@ public class formatBody {
     private @Inject Client client;
     private @Inject ItemManager itemManager;
     private @Inject PokescapeConfig config;
+    private @Inject Utils utils;
 
     private JsonObject allPets;
     private static final ImmutableSet<String> PET_MESSAGES = ImmutableSet.of(
@@ -128,6 +130,7 @@ public class formatBody {
             lootID.add(itemId);
             lootQuantity.add(item.getQuantity());
         }
+        utils.updateLootInfo(recentActivities, npcName, lootName, lootID, lootQuantity);
 
         // Populate body with game messages
         List<String> gameMessages = new ArrayList<>(messageCollector);
