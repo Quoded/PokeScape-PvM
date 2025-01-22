@@ -34,6 +34,7 @@ import com.google.gson.JsonObject;
 import net.runelite.api.Client;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Actor;
+import net.runelite.api.VarPlayer;
 import net.runelite.api.Varbits;
 import net.runelite.api.Player;
 import net.runelite.api.Item;
@@ -78,6 +79,8 @@ public class Utils {
     private static final int TOA_WIDGET = 31522858;
     private static final int TOB_RAIDERS_VARC = 330;
     private static final int TOA_RAIDERS_VARC = 1099;
+
+    private static final int RAID_PARTY_SIZE = 5424;
 
     public List<eventObject> matchEvent(JsonObject object, String event, String eventType, String filterKey, String filterValue) {
         List<eventObject> matchedEvent = new ArrayList<>();
@@ -475,8 +478,8 @@ public class Utils {
                 }
             }
             totalPoints = client.getVarbitValue(Varbits.TOTAL_POINTS);
-            personalPoints = client.getVarbitValue(Varbits.PERSONAL_POINTS);
-            coxSize = client.getVarbitValue(Varbits.RAID_PARTY_SIZE);
+            personalPoints = client.getVarpValue(VarPlayer.RAIDS_PERSONAL_POINTS);
+            coxSize = client.getVarbitValue(RAID_PARTY_SIZE);
             raidName = "cox";
         }
 
